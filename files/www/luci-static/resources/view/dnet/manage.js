@@ -133,9 +133,13 @@ return view.extend({
 			previousBootstrapStatus = result.status;
 		}
 		function newerVersion(output) {
-			var current = output.match(/当前版本\s*[:：]\s*[vV]?(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)/);
 			var latest = output.match(/最新版本\s*[:：]\s*[vV]?(\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?)/);
-			if (!current || !latest) return false;
+			if (!latest) return false;
+			var current = output.match(/当前版本\s*[:：]\s*[vV]?([0-9A-Za-z.\-]+)/);
+			// 当前版本解析不出语义化版本（DEV、日期构建号等）时按「可升级」处理：
+			// 该类程序无法参与本地版本比较，升级后即可恢复正常的版本线。
+			if (!current) return true;
+			if (!/^(?:\d+\.){1,3}\d+(?:-[0-9A-Za-z.-]+)?$/.test(current[1])) return true;
 			var a = current[1].split('-'), b = latest[1].split('-');
 			var av = a[0].split('.'), bv = b[0].split('.');
 			for (var i = 0; i < Math.max(av.length, bv.length); i++) {
@@ -145,8 +149,15 @@ return view.extend({
 			if (a.length == b.length) return false;
 			return a.length > b.length;
 		}
+		function canUpgrade(result) {
+			if (result.mode != 'check' || result.status == 'running') return false;
+			// 旧程序的版本号解析不了时，dnet -u 直接退出，但 bootstrap 只看发布资产，
+			// 照样能把任意已安装版本升级到最新发布。
+			if (/不是语义化版本/.test(result.output)) return true;
+			return result.exit_code == '0' && newerVersion(result.output);
+		}
 		function updateUpgradeButton(result) {
-			upgradeButton.style.display = result.mode == 'check' && result.status != 'running' && result.exit_code == '0' && newerVersion(result.output) ? '' : 'none';
+			upgradeButton.style.display = canUpgrade(result) ? '' : 'none';
 		}
 		function button(text, cls, handler) {
 			return e('button', { 'class': 'cbi-button ' + (cls || ''), 'click': handler, 'style': 'margin:0.25em 0.5em 0.25em 0' }, text);
@@ -222,7 +233,7 @@ return view.extend({
 				updateState(v[0].enabled, v[0].running);
 				updateBinaryProgress(v[2], v[0].enabled, v[0].running);
 				updateUpgradeButton(v[1]);
-				if (v[1].status == 'running') job.textContent = '正在检查或升级…';
+				if (v[1].status == 'running') job.textContent = v[1].mode == 'update' ? '正在通过 LuCI 下载并校验升级…' : '正在检查或升级…';
 				else if (v[1].output) job.textContent = v[1].output + (v[1].exit_code ? '\n退出码：' + v[1].exit_code : '');
 			});
 		});

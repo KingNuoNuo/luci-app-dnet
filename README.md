@@ -12,10 +12,10 @@ upgrade the release published by **KingNuoNuo/dnet**, and jump to the D-NET web 
 Prebuilt package (architecture independent, OpenWrt 23.05+ / QWRT):
 
 ```sh
-opkg install luci-app-dnet_1.0.0-16_all.ipk
+opkg install luci-app-dnet_1.0.0-17_all.ipk
 ```
 
-Or upload `dist/luci-app-dnet_1.0.0-16_all.ipk` to the router and install it
+Or upload `dist/luci-app-dnet_1.0.0-17_all.ipk` to the router and install it
 from there. Then open **Services → D-NET**, set the paths, and enable the
 service.
 
@@ -46,6 +46,12 @@ Installing the package neither checks whether D-NET exists nor starts it.
 - Update check and upgrade run only after clicking their respective buttons.
   `dnet -u` in the fork checks the same KingNuoNuo/dnet releases and verifies
   `checksums.txt`. Upgrade restarts the procd service only when it is enabled.
+- Upgrades run through the LuCI-verified download path (`dnet-luci-bootstrap`),
+  so they work even when the installed binary reports a non-semantic version
+  (DEV or date builds): `dnet -u` cannot compare those locally, but the
+  download only depends on the release assets.
+- The upgrade button also appears when the update log reports an unparseable
+  current version instead of staying hidden behind a failed check.
 - The Web button opens the current router host on TCP port 9877.
 
 ## Build
@@ -59,8 +65,8 @@ make package/luci-app-dnet/compile V=s
 A prebuilt `all` architecture IPK is produced by a dependency-free script:
 
 ```sh
-python3 build_ipk.py            # default 1.0.0-16
-python3 build_ipk.py 1.0.0-17   # other release number
+python3 build_ipk.py            # default 1.0.0-17
+python3 build_ipk.py 1.0.0-18   # other release number
 ```
 
 Output goes to `dist/` together with `SHA256SUMS`. The build is reproducible:
