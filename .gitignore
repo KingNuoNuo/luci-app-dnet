@@ -1,0 +1,9 @@
+# build artifacts
+*.ipk.tmp
+__pycache__/
+*.pyc
+
+# editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp

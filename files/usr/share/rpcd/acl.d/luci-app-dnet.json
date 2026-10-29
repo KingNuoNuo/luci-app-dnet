@@ -1,0 +1,7 @@
+{
+  "luci-app-dnet": {
+    "description": "Manage D-NET service",
+    "read": { "ubus": { "luci.dnet": [ "status", "update_status", "binary_status" ] }, "uci": [ "dnet" ] },
+    "write": { "ubus": { "luci.dnet": [ "settings_save", "settings_apply", "update_start" ] }, "uci": [ "dnet" ] }
+  }
+}

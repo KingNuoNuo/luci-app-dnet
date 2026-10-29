@@ -1,0 +1,36 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=99
+STOP=10
+
+start_service() {
+	config_load dnet
+	config_get_bool enabled main enabled 0
+	[ "$enabled" = 1 ] || return 0
+	config_get program main program_path /mnt/sda1/overlay/usr/bin/dnet
+	config_get conf main config_path /mnt/sda1/.dnet_config.yaml
+	case "$program" in /*) ;; *) logger -t dnet "program path must be absolute"; return 1 ;; esac
+	if [ ! -e "$program" ]; then
+		mkdir -p /var/run/dnet-luci
+		/usr/libexec/dnet-luci-bootstrap "$program" "$conf" >/dev/null 2>&1 &
+		logger -t dnet "D-NET binary is missing; downloading before service start"
+		return 0
+	fi
+	[ -x "$program" ] || { logger -t dnet "configured program is not executable"; return 1; }
+	if [ ! -e "$conf" ]; then
+		[ ! -L "$conf" ] || { logger -t dnet "configured file path is a dangling symlink"; return 1; }
+		mkdir -p "$(dirname "$conf")" || { logger -t dnet "cannot create configuration directory"; return 1; }
+		(umask 077; printf '# D-NET configuration; created automatically by LuCI.\n' >"$conf") || {
+			logger -t dnet "cannot create configuration file"; return 1;
+		}
+		logger -t dnet "created missing configuration file: $conf"
+	fi
+	[ -f "$conf" ] || { logger -t dnet "configured path is not a regular file"; return 1; }
+	procd_open_instance
+	procd_set_param command "$program" -c "$conf" -l :9877
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

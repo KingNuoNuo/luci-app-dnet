@@ -1,0 +1,10 @@
+#!/bin/sh
+# Initialize defaults only. Deliberately do not probe for or start D-NET.
+uci -q get dnet.main >/dev/null || {
+	uci set dnet.main=dnet
+	uci set dnet.main.enabled='0'
+	uci set dnet.main.program_path='/mnt/sda1/overlay/usr/bin/dnet'
+	uci set dnet.main.config_path='/mnt/sda1/.dnet_config.yaml'
+	uci commit dnet
+}
+exit 0

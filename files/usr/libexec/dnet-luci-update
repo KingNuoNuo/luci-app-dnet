@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+program=$1
+mode=$2
+run=/var/run/dnet-luci
+mkdir -p "$run"
+mkdir "$run/lockdir" 2>/dev/null || exit 3
+trap 'rmdir "$run/lockdir" 2>/dev/null || true' EXIT
+printf '%s\n' running >"$run/status"
+printf '%s\n' "$mode" >"$run/mode"
+printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" >"$run/started"
+cd "$(dirname "$program")"
+if [ "$mode" = update ]; then
+	printf 'y\n' | "$program" -u >"$run/output" 2>&1 || rc=$?
+else
+	printf 'n\n' | "$program" -u >"$run/output" 2>&1 || rc=$?
+fi
+rc=${rc:-0}
+printf '%s\n' "$rc" >"$run/exit_code"
+printf '%s\n' done >"$run/status"
+if [ "$mode" = update ] && [ "$rc" = 0 ] && [ "$(/sbin/uci -q get dnet.main.enabled || true)" = 1 ]; then
+	/etc/init.d/dnet restart >>"$run/output" 2>&1 || true
+fi
+exit 0

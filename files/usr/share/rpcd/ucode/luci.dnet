@@ -1,0 +1,92 @@
+#!/usr/bin/ucode
+'use strict';
+import { readfile } from 'fs';
+
+function q(s) { return "'" + replace(s, "'", "'\\''") + "'"; }
+function cfg(key, fallback) {
+	let lines = split(readfile('/etc/config/dnet') || '', '\n');
+	for (let line in lines) {
+		let m = match(trim(line), /^option ([A-Za-z0-9_]+) '([^']*)'$/);
+		if (m && m[1] == key) return m[2];
+	}
+	return fallback;
+}
+function validpath(s) {
+	return type(s) == 'string' && match(s, /^\/[A-Za-z0-9_.+@ \/-]+$/) && !match(s, /(^|\/)\.\.(\/|$)/);
+}
+function normalized_path(s, filename) {
+	if (!validpath(s)) return null;
+	if (match(s, /\/$/) || system('[ -d ' + q(s) + ' ]') == 0) {
+		let base = replace(s, /\/+$/, '');
+		s = (base || '') + '/' + filename;
+	}
+	return s;
+}
+
+const methods = {
+	status: { call: function() {
+		let program = cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet');
+		let config = cfg('config_path', '/mnt/sda1/.dnet_config.yaml');
+		return { enabled: cfg('enabled', '0') == '1', running: system('pidof dnet >/dev/null 2>&1') == 0,
+			program_path: normalized_path(program, 'dnet') || program, config_path: normalized_path(config, '.dnet_config.yaml') || config,
+			web_port: 9877 };
+	} },
+	settings_save: { args: { program_path: 'program_path', config_path: 'config_path', enabled: 'enabled' }, call: function(req) {
+		let p = normalized_path(req.args.program_path, 'dnet');
+		let c = normalized_path(req.args.config_path, '.dnet_config.yaml');
+		let on = req.args.enabled == '1';
+		if (!p || !c) return { ok: false, error: '路径必须是绝对路径，且不能包含 ..' };
+		if (system('[ -e ' + q(p) + ' ]') == 0 && system('[ -f ' + q(p) + ' ]') != 0)
+			return { ok: false, error: '应用程序路径不是普通文件；请填写可执行文件路径或目标目录' };
+		if (system('[ -e ' + q(c) + ' ]') == 0 && system('[ -f ' + q(c) + ' ]') != 0)
+			return { ok: false, error: '配置文件路径不是普通文件；请填写配置文件路径或目标目录' };
+		let cmd = '/sbin/uci set dnet.main.program_path=' + q(p) +
+			' && /sbin/uci set dnet.main.config_path=' + q(c) +
+			' && /sbin/uci set dnet.main.enabled=' + (on ? '1' : '0') + ' && /sbin/uci commit dnet';
+		if (system(cmd) != 0) return { ok: false, error: '保存设置失败' };
+		if (system(on ? '/etc/init.d/dnet enable' : '/etc/init.d/dnet disable') != 0)
+			return { ok: false, error: '设置已保存，但开机启动状态更新失败' };
+		return { ok: true, program_path: p, config_path: c };
+	} },
+	settings_apply: { args: { program_path: 'program_path', config_path: 'config_path', enabled: 'enabled' }, call: function(req) {
+		let p = normalized_path(req.args.program_path, 'dnet');
+		let c = normalized_path(req.args.config_path, '.dnet_config.yaml');
+		let on = req.args.enabled == '1';
+		if (!p || !c) return { ok: false, error: '路径必须是绝对路径，且不能包含 ..' };
+		let exists = system('[ -e ' + q(p) + ' ]') == 0;
+		if (on && exists && (system('[ -f ' + q(p) + ' ]') != 0 || system('[ -x ' + q(p) + ' ]') != 0))
+			return { ok: false, error: '指定应用程序存在但不可执行；请检查文件权限' };
+		if (on && system('[ -e ' + q(c) + ' ]') == 0 && system('[ -f ' + q(c) + ' ]') != 0)
+			return { ok: false, error: '配置路径不是普通文件；请填写配置文件路径或目标目录' };
+		let cmd = '/sbin/uci set dnet.main.program_path=' + q(p) +
+			' && /sbin/uci set dnet.main.config_path=' + q(c) +
+			' && /sbin/uci set dnet.main.enabled=' + (on ? '1' : '0') + ' && /sbin/uci commit dnet';
+		if (system(cmd) != 0) return { ok: false, error: '保存设置失败' };
+		system(on ? 'rm -f /var/run/dnet-luci/bootstrap.cancel' : 'touch /var/run/dnet-luci/bootstrap.cancel');
+		let rc = system(on ? '/etc/init.d/dnet enable && /etc/init.d/dnet restart' : '/etc/init.d/dnet stop; /etc/init.d/dnet disable');
+		if (rc != 0 && on) {
+			system('/sbin/uci set dnet.main.enabled=0 && /sbin/uci commit dnet; /etc/init.d/dnet disable');
+			return { ok: false, error: '设置已保存，但服务启动失败；已恢复为关闭状态，请检查程序及配置文件路径' };
+		}
+		return { ok: rc == 0, pending: on && !exists, program_path: p, config_path: c, error: rc == 0 ? null : '停止服务失败' };
+	} },
+	update_start: { args: { mode: 'mode' }, call: function(req) {
+		let mode = req.args.mode;
+		if (mode != 'check' && mode != 'update') return { ok: false, error: '非法操作' };
+		let p = cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet');
+		if (!validpath(p)) return { ok: false, error: '程序路径格式无效' };
+		/* Only check executable after the user explicitly clicks a button. */
+		if (system('[ -x ' + q(p) + ' ]') != 0) return { ok: false, error: '指定程序不存在或不可执行' };
+		system('mkdir -p /var/run/dnet-luci; rm -f /var/run/dnet-luci/status /var/run/dnet-luci/mode /var/run/dnet-luci/output /var/run/dnet-luci/exit_code');
+		return { ok: system('(/usr/libexec/dnet-luci-update ' + q(p) + ' ' + q(mode) + ' >/dev/null 2>&1 &)') == 0 };
+	} },
+	update_status: { call: function() {
+		return { status: trim(readfile('/var/run/dnet-luci/status') || 'idle'), mode: trim(readfile('/var/run/dnet-luci/mode') || ''), output: readfile('/var/run/dnet-luci/output') || '',
+			exit_code: trim(readfile('/var/run/dnet-luci/exit_code') || '') };
+	} },
+	binary_status: { call: function() {
+		let parts = split(trim(readfile('/var/run/dnet-luci/bootstrap_status') || 'idle\t0\t0\t0\t'), '\t');
+		return { status: parts[0] || 'idle', percent: int(parts[1] || '0'), downloaded: int(parts[2] || '0'), total: int(parts[3] || '0'), message: parts[4] || '' };
+	} }
+};
+return { 'luci.dnet': methods };

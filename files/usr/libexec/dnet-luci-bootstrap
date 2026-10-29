@@ -1,0 +1,147 @@
+#!/bin/sh
+set -eu
+
+program=$1
+config=$2
+run=/var/run/dnet-luci
+state=$run/bootstrap_status
+lock=$run/bootstrap.lock
+work=
+curl_pid=
+
+write_state() {
+	status=$1
+	percent=$2
+	downloaded=$3
+	total=$4
+	message=$5
+	printf '%s\t%s\t%s\t%s\t%s\n' "$status" "$percent" "$downloaded" "$total" "$message" >"$state.tmp"
+	mv -f "$state.tmp" "$state"
+}
+
+cleanup() {
+	if [ -n "$curl_pid" ]; then
+		kill "$curl_pid" 2>/dev/null || true
+	fi
+	[ -z "$work" ] || rm -rf "$work"
+	rmdir "$lock" 2>/dev/null || true
+}
+
+fail() {
+	write_state error 0 0 0 "$1"
+	exit 1
+}
+
+mkdir -p "$run"
+mkdir "$lock" 2>/dev/null || exit 0
+trap cleanup EXIT INT TERM
+
+if [ "$(/sbin/uci -q get dnet.main.enabled || true)" != 1 ]; then
+	write_state idle 0 0 0 '服务已关闭'
+	exit 0
+fi
+if [ ! -x "$(command -v curl 2>/dev/null || true)" ] || [ ! -x "$(command -v jq 2>/dev/null || true)" ]; then
+	fail '路由缺少 curl 或 jq，无法自动下载'
+fi
+case "$(uname -m)" in
+	aarch64|arm64) arch=arm64 ;;
+	x86_64|amd64) arch=x86_64 ;;
+	armv7l|armv7*) arch=armv7 ;;
+	armv6l|armv6*) arch=armv6 ;;
+	armv5tel|armv5*) arch=armv5 ;;
+	i386|i486|i586|i686) arch=i386 ;;
+	*) fail "暂不支持自动下载此设备架构：$(uname -m)" ;;
+esac
+
+dir=$(dirname "$program")
+mkdir -p "$dir" || fail "无法创建程序目录：$dir"
+work=$(mktemp -d "$dir/.dnet-download.XXXXXX") || fail '无法在程序目录创建下载临时目录'
+api=$work/release.json
+checksums=$work/checksums.txt
+archive=$work/dnet.tar.gz
+staged=$work/dnet
+
+write_state resolving 0 0 0 '正在查询 D-NET 官方发布版本'
+if ! curl -fsSL --connect-timeout 20 --max-time 60 --retry 2 \
+	-H 'Accept: application/vnd.github+json' -H 'User-Agent: luci-app-dnet' \
+	'https://api.github.com/repos/cxbdasheng/dnet/releases/latest' -o "$api" 2>"$work/api.log"; then
+	fail '无法连接 GitHub API；请检查路由器网络或 DNS'
+fi
+version=$(jq -er '.tag_name | ltrimstr("v")' "$api" 2>/dev/null) || fail '无法读取 D-NET 发布版本'
+asset_name="dnet_${version}_linux_${arch}.tar.gz"
+asset_url=$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' "$api" 2>/dev/null) || fail "官方发布中没有设备架构对应的文件：$asset_name"
+asset_size=$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .size' "$api" 2>/dev/null) || asset_size=0
+case "$asset_size" in ''|*[!0-9]*) asset_size=0 ;; esac
+case "$asset_url" in https://github.com/cxbdasheng/dnet/releases/download/*) ;; *) fail '官方发布返回了无效的下载地址' ;; esac
+checksum_url=$(jq -er '.assets[] | select(.name == "checksums.txt") | .browser_download_url' "$api" 2>/dev/null) || fail '官方发布缺少 checksums.txt'
+case "$checksum_url" in https://github.com/cxbdasheng/dnet/releases/download/*) ;; *) fail '官方发布返回了无效的校验文件地址' ;; esac
+
+write_state verifying 0 0 "$asset_size" '正在获取官方 SHA-256 校验值'
+curl -fsSL --connect-timeout 20 --max-time 60 --retry 2 \
+	-H 'User-Agent: luci-app-dnet' "$checksum_url" -o "$checksums" 2>"$work/checksum.log" || fail '下载官方 SHA-256 校验文件失败'
+expected=$(awk -v name="$asset_name" '$2 == name { print $1 }' "$checksums")
+[ "${#expected}" -eq 64 ] || fail '官方 SHA-256 校验文件中没有匹配的程序包'
+case "$expected" in *[!0-9a-fA-F]*) fail '官方 SHA-256 校验值格式无效' ;; esac
+
+write_state downloading 0 0 "$asset_size" '正在下载 D-NET 程序'
+curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 1 \
+	-H 'User-Agent: luci-app-dnet' "$asset_url" -o "$archive" >"$work/download.log" 2>&1 &
+curl_pid=$!
+while kill -0 "$curl_pid" 2>/dev/null; do
+	if [ -f "$run/bootstrap.cancel" ] || [ "$(/sbin/uci -q get dnet.main.enabled || true)" != 1 ] ||	   [ "$(/sbin/uci -q get dnet.main.program_path || true)" != "$program" ] ||	   [ "$(/sbin/uci -q get dnet.main.config_path || true)" != "$config" ]; then
+		kill "$curl_pid" 2>/dev/null || true
+		wait "$curl_pid" 2>/dev/null || true
+		curl_pid=
+		write_state idle 0 0 "$asset_size" '服务启动已取消'
+		exit 0
+	fi
+	downloaded=0
+	[ ! -f "$archive" ] || downloaded=$(wc -c <"$archive" | tr -d ' ')
+	percent=0
+	if [ "$asset_size" -gt 0 ]; then
+		percent=$((downloaded * 100 / asset_size))
+		[ "$percent" -lt 100 ] || percent=99
+	fi
+	write_state downloading "$percent" "$downloaded" "$asset_size" '正在下载 D-NET 程序'
+	sleep 1
+done
+if ! wait "$curl_pid"; then
+	curl_pid=
+	fail 'D-NET 下载失败；请检查路由器到 GitHub 的连接'
+fi
+curl_pid=
+downloaded=$(wc -c <"$archive" | tr -d ' ')
+[ "$downloaded" -gt 0 ] || fail '下载文件为空'
+[ "$asset_size" -eq 0 ] || [ "$downloaded" -eq "$asset_size" ] || fail '下载文件大小与官方发布信息不一致'
+[ "$asset_size" -gt 0 ] || asset_size=$downloaded
+
+write_state verifying 99 "$asset_size" "$asset_size" '正在校验下载文件'
+actual=$(sha256sum "$archive" | awk '{print $1}')
+[ "$actual" = "$expected" ] || fail 'SHA-256 校验失败，已拒绝安装下载文件'
+
+entry=$(tar -tzf "$archive" | awk -F/ '$NF == "dnet" && $0 !~ /^\// && $0 !~ /(^|\/)\.\.(\/|$)/ { print; count++ } END { if (count != 1) exit 1 }') || fail '发布压缩包中没有唯一的 dnet 可执行文件'
+write_state installing 99 "$asset_size" "$asset_size" '校验通过，正在安装 D-NET 程序'
+tar -xOzf "$archive" "$entry" >"$staged" || fail '解压 D-NET 程序失败'
+chmod 755 "$staged" || fail '设置 D-NET 程序权限失败'
+"$staged" -v >/dev/null 2>&1 || fail '下载的 D-NET 程序无法在本设备运行'
+
+if [ -f "$config" ]; then
+	:
+elif [ -e "$config" ] || [ -L "$config" ]; then
+	fail '配置路径已存在但不是普通文件'
+else
+	write_state creating_config 99 "$asset_size" "$asset_size" '程序已就绪，正在创建默认配置文件'
+	config_dir=$(dirname "$config")
+	mkdir -p "$config_dir" || fail "无法创建配置目录：$config_dir"
+	(umask 077; printf '# D-NET configuration; created automatically by LuCI.\n' >"$config") || fail "无法创建配置文件：$config"
+fi
+
+if [ "$(/sbin/uci -q get dnet.main.enabled || true)" != 1 ] ||	[ "$(/sbin/uci -q get dnet.main.program_path || true)" != "$program" ] ||	[ "$(/sbin/uci -q get dnet.main.config_path || true)" != "$config" ]; then
+	write_state idle 0 0 "$asset_size" '服务启动已取消'
+	exit 0
+fi
+write_state starting 99 "$asset_size" "$asset_size" '正在启动 D-NET 服务'
+mv -f "$staged" "$program" || fail '无法将程序安装到指定路径'
+/etc/init.d/dnet restart || fail '程序已下载，但 D-NET 服务启动失败'
+write_state done 100 "$asset_size" "$asset_size" '下载完成，D-NET 服务已启动'
+exit 0
