@@ -73,8 +73,8 @@ const methods = {
 	update_start: { args: { mode: 'mode' }, call: function(req) {
 		let mode = req.args.mode;
 		if (mode != 'check' && mode != 'update') return { ok: false, error: '非法操作' };
-		let p = cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet');
-		if (!validpath(p)) return { ok: false, error: '程序路径格式无效' };
+		let p = normalized_path(cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet'), 'dnet');
+		if (!p) return { ok: false, error: '程序路径格式无效' };
 		/* Only check executable after the user explicitly clicks a button. */
 		if (system('[ -x ' + q(p) + ' ]') != 0) return { ok: false, error: '指定程序不存在或不可执行' };
 		system('mkdir -p /var/run/dnet-luci; rm -f /var/run/dnet-luci/status /var/run/dnet-luci/mode /var/run/dnet-luci/output /var/run/dnet-luci/exit_code');

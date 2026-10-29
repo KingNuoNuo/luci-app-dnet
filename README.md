@@ -1,20 +1,21 @@
 # luci-app-dnet
 
-LuCI management page for the [D-NET](https://github.com/cxbdasheng/dnet) executable.
+LuCI management page for the [D-NET](https://github.com/KingNuoNuo/dnet) executable
+(fork of [cxbdasheng/dnet](https://github.com/cxbdasheng/dnet)).
 
 This package does **not** bundle D-NET. It gives you a LuCI page to set the
 executable path and the YAML config path, start/stop the service, download or
-upgrade the official release, and jump to the D-NET web UI.
+upgrade the release published by **KingNuoNuo/dnet**, and jump to the D-NET web UI.
 
 ## Install
 
 Prebuilt package (architecture independent, OpenWrt 23.05+ / QWRT):
 
 ```sh
-opkg install luci-app-dnet_1.0.0-15_all.ipk
+opkg install luci-app-dnet_1.0.0-16_all.ipk
 ```
 
-Or upload `dist/luci-app-dnet_1.0.0-15_all.ipk` to the router and install it
+Or upload `dist/luci-app-dnet_1.0.0-16_all.ipk` to the router and install it
 from there. Then open **Services → D-NET**, set the paths, and enable the
 service.
 
@@ -31,17 +32,20 @@ Installing the package neither checks whether D-NET exists nor starts it.
 
 ## Behavior
 
-- Starting the service downloads the matching official GitHub release when the
-  configured executable is missing, verifies its SHA-256, installs it at the
-  configured path, and shows byte/percentage progress in LuCI.
+- Starting the service downloads the matching release from **KingNuoNuo/dnet**
+  when the configured executable is missing, verifies its SHA-256, installs it
+  at the configured path, and shows byte/percentage progress in LuCI.
+- Release assets must follow `dnet_<version>_linux_<x86_64|arm64|armv7|armv6|armv5|i386>.tar.gz`
+  plus a `checksums.txt` (sha256sum format); this is what the D-NET release
+  workflow produces.
 - If the YAML config file is missing, an empty but valid file is created with
   restrictive permissions before the service starts.
 - Release tag parsing works with the router's `jq` build even when the optional
   regex library is unavailable. The status view prioritizes a running service
   over a stale bootstrap error.
 - Update check and upgrade run only after clicking their respective buttons.
-  The upstream `-u` updater verifies release checksums. Upgrade restarts the
-  procd service only when it is enabled.
+  `dnet -u` in the fork checks the same KingNuoNuo/dnet releases and verifies
+  `checksums.txt`. Upgrade restarts the procd service only when it is enabled.
 - The Web button opens the current router host on TCP port 9877.
 
 ## Build
@@ -55,8 +59,8 @@ make package/luci-app-dnet/compile V=s
 A prebuilt `all` architecture IPK is produced by a dependency-free script:
 
 ```sh
-python3 build_ipk.py            # default 1.0.0-15
-python3 build_ipk.py 1.0.0-16   # other release number
+python3 build_ipk.py            # default 1.0.0-16
+python3 build_ipk.py 1.0.0-17   # other release number
 ```
 
 Output goes to `dist/` together with `SHA256SUMS`. The build is reproducible:

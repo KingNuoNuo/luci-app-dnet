@@ -3,6 +3,8 @@ set -eu
 
 program=$1
 config=$2
+# 只从本 Fork 的 Releases 下载，避免和上游版本线混在一起。
+repo=KingNuoNuo/dnet
 run=/var/run/dnet-luci
 state=$run/bootstrap_status
 lock=$run/bootstrap.lock
@@ -61,20 +63,20 @@ checksums=$work/checksums.txt
 archive=$work/dnet.tar.gz
 staged=$work/dnet
 
-write_state resolving 0 0 0 '正在查询 D-NET 官方发布版本'
+write_state resolving 0 0 0 '正在查询 D-NET 发布版本'
 if ! curl -fsSL --connect-timeout 20 --max-time 60 --retry 2 \
 	-H 'Accept: application/vnd.github+json' -H 'User-Agent: luci-app-dnet' \
-	'https://api.github.com/repos/cxbdasheng/dnet/releases/latest' -o "$api" 2>"$work/api.log"; then
+	"https://api.github.com/repos/$repo/releases/latest" -o "$api" 2>"$work/api.log"; then
 	fail '无法连接 GitHub API；请检查路由器网络或 DNS'
 fi
 version=$(jq -er '.tag_name | ltrimstr("v")' "$api" 2>/dev/null) || fail '无法读取 D-NET 发布版本'
 asset_name="dnet_${version}_linux_${arch}.tar.gz"
-asset_url=$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' "$api" 2>/dev/null) || fail "官方发布中没有设备架构对应的文件：$asset_name"
+asset_url=$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' "$api" 2>/dev/null) || fail "本次发布中没有设备架构对应的文件：$asset_name"
 asset_size=$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .size' "$api" 2>/dev/null) || asset_size=0
 case "$asset_size" in ''|*[!0-9]*) asset_size=0 ;; esac
-case "$asset_url" in https://github.com/cxbdasheng/dnet/releases/download/*) ;; *) fail '官方发布返回了无效的下载地址' ;; esac
-checksum_url=$(jq -er '.assets[] | select(.name == "checksums.txt") | .browser_download_url' "$api" 2>/dev/null) || fail '官方发布缺少 checksums.txt'
-case "$checksum_url" in https://github.com/cxbdasheng/dnet/releases/download/*) ;; *) fail '官方发布返回了无效的校验文件地址' ;; esac
+case "$asset_url" in "https://github.com/$repo/releases/download/"*) ;; *) fail '发布返回了无效的下载地址' ;; esac
+checksum_url=$(jq -er '.assets[] | select(.name == "checksums.txt") | .browser_download_url' "$api" 2>/dev/null) || fail '本次发布缺少 checksums.txt'
+case "$checksum_url" in "https://github.com/$repo/releases/download/"*) ;; *) fail '发布返回了无效的校验文件地址' ;; esac
 
 write_state verifying 0 0 "$asset_size" '正在获取官方 SHA-256 校验值'
 curl -fsSL --connect-timeout 20 --max-time 60 --retry 2 \
