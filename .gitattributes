@@ -1,0 +1,11 @@
+# Router-side files must keep LF endings: CRLF breaks sh scripts and ucode.
+* text=auto eol=lf
+
+# Shell / ucode / js must never be converted.
+files/**            text eol=lf
+*.sh                text eol=lf
+*.js                text eol=lf
+Makefile            text eol=lf
+
+# Package binaries
+*.ipk               binary
