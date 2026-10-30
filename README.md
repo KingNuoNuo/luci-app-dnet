@@ -12,10 +12,10 @@ upgrade the release published by **KingNuoNuo/dnet**, and jump to the D-NET web 
 Prebuilt package (architecture independent, OpenWrt 23.05+ / QWRT):
 
 ```sh
-opkg install luci-app-dnet_1.0.0-19_all.ipk
+opkg install luci-app-dnet_1.0.0-20_all.ipk
 ```
 
-Or upload `dist/luci-app-dnet_1.0.0-19_all.ipk` to the router and install it
+Or upload `dist/luci-app-dnet_1.0.0-20_all.ipk` to the router and install it
 from there. Then open **Services → D-NET**, set the paths, and enable the
 service.
 
@@ -73,8 +73,8 @@ make package/luci-app-dnet/compile V=s
 A prebuilt `all` architecture IPK is produced by a dependency-free script:
 
 ```sh
-python3 build_ipk.py            # default 1.0.0-19
-python3 build_ipk.py 1.0.0-19   # other release number
+python3 build_ipk.py            # default 1.0.0-20
+python3 build_ipk.py 1.0.0-20   # other release number
 ```
 
 Output goes to `dist/` together with `SHA256SUMS`. The build is reproducible:

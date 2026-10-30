@@ -10,7 +10,7 @@ import tarfile
 
 root = Path(__file__).resolve().parent
 pkg = root / 'files'
-version = sys.argv[1] if len(sys.argv) > 1 else '1.0.0-19'
+version = sys.argv[1] if len(sys.argv) > 1 else '1.0.0-20'
 out_dir = root / 'dist'
 out_dir.mkdir(exist_ok=True)
 out = out_dir / f'luci-app-dnet_{version}_all.ipk'
@@ -28,6 +28,13 @@ SourceName: luci-app-dnet
 '''.encode()
 
 conffiles = b'/etc/config/dnet\n'
+
+# rpcd caches ucode plugins and ACLs at startup: reload it after install so the
+# new ubus methods are usable without a reboot.
+postinst = b'''#!/bin/sh
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1
+exit 0
+'''
 
 # Keep the same exec bits the procd scripts and rpcd backend need.
 exec_files = {
@@ -59,7 +66,8 @@ def make_inner(files):
     return buf.getvalue()
 
 
-control_files = [('.', None, 0o755), ('./control', control, 0o644), ('./conffiles', conffiles, 0o644)]
+control_files = [('.', None, 0o755), ('./control', control, 0o644), ('./conffiles', conffiles, 0o644),
+                 ('./postinst', postinst, 0o755)]
 
 data_files = [('.', None, 0o755)]
 for f in sorted(pkg.rglob('*')):

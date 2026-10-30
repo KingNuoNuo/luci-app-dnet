@@ -155,8 +155,11 @@ return view.extend({
 				e('p', {}, '请立即把下面的密钥离线保存（密码管理器 / U 盘）。丢了它，已加密的云厂商密钥和 ACME 账号密钥将无法恢复。'),
 				field,
 				e('p', { 'class': 'cbi-value-description' }, '文件位置：' + path + '（权限 0600）'),
-				e('button', { 'class': 'cbi-button cbi-button-action', 'click': copy }, '复制到剪贴板')
-			], [ [ '我已保存', function() { ui.hideModal(); }, 'cbi-button cbi-button-positive' ] ]);
+				e('div', { 'style': 'display:flex;flex-wrap:wrap;gap:0.5em;margin-top:0.5em' }, [
+					e('button', { 'class': 'cbi-button cbi-button-action', 'click': copy }, '复制到剪贴板'),
+					e('button', { 'class': 'cbi-button cbi-button-positive', 'click': function() { ui.hideModal(); } }, '我已保存')
+				])
+			]);
 		}
 		function secretCall(kind) {
 			var call = kind == 'init' ? callSecretInit : (kind == 'encrypt' ? callSecretEncrypt : callSecretDecrypt);
@@ -182,11 +185,15 @@ return view.extend({
 			var text = kind == 'encrypt' ?
 				'将把配置里的云厂商密钥、ACME 账号密钥、证书私钥、Webhook 地址加密后落盘，并重启 D-NET。原文件会备份为 .bak.<时间>。' :
 				'将把配置里的密钥字段解密成明文并重启 D-NET。明文会留在磁盘上，只建议在更换主密钥时临时使用。';
-			ui.showModal(kind == 'encrypt' ? '确认加密配置' : '确认解密配置', [ e('p', {}, text) ], [
-				[ '取消', function() { ui.hideModal(); }, 'cbi-button' ],
-				[ kind == 'encrypt' ? '开始加密' : '解密为明文',
-					function() { ui.hideModal(); return secretCall(kind); },
-					'cbi-button ' + (kind == 'encrypt' ? 'cbi-button-positive' : 'cbi-button-negative') ]
+			ui.showModal(kind == 'encrypt' ? '确认加密配置' : '确认解密配置', [
+				e('p', {}, text),
+				e('div', { 'style': 'display:flex;flex-wrap:wrap;gap:0.5em;margin-top:0.5em' }, [
+					e('button', { 'class': 'cbi-button', 'click': function() { ui.hideModal(); } }, '取消'),
+					e('button', {
+						'class': 'cbi-button ' + (kind == 'encrypt' ? 'cbi-button-positive' : 'cbi-button-negative'),
+						'click': function() { ui.hideModal(); return secretCall(kind); }
+					}, kind == 'encrypt' ? '开始加密' : '解密为明文')
+				])
 			]);
 		}
 		var previousBootstrapStatus = binaryInitial.status;
