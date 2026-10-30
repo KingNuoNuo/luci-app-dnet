@@ -10,6 +10,10 @@ var callApply = rpc.declare({ object: 'luci.dnet', method: 'settings_apply', par
 var callUpdate = rpc.declare({ object: 'luci.dnet', method: 'update_start', params: [ 'mode' ] });
 var callUpdateStatus = rpc.declare({ object: 'luci.dnet', method: 'update_status' });
 var callBinaryStatus = rpc.declare({ object: 'luci.dnet', method: 'binary_status' });
+var callSecretStatus = rpc.declare({ object: 'luci.dnet', method: 'secret_status' });
+var callSecretInit = rpc.declare({ object: 'luci.dnet', method: 'secret_init' });
+var callSecretEncrypt = rpc.declare({ object: 'luci.dnet', method: 'secret_encrypt' });
+var callSecretDecrypt = rpc.declare({ object: 'luci.dnet', method: 'secret_decrypt' });
 
 function notify(message, error) {
 	ui.addNotification(null, E('p', {}, message), error ? 'error' : 'info');
@@ -72,9 +76,16 @@ return view.extend({
 			return false;
 		});
 	},
-	load: function() { return Promise.all([ callStatus(), callUpdateStatus(), callBinaryStatus() ]); },
+	load: function() {
+		return Promise.all([ callStatus(), callUpdateStatus(), callBinaryStatus(),
+			callSecretStatus().catch(function() {
+				// rpcd 未重载 / 旧版插件没有该方法时，页面仍要能打开。
+				return { ok: false, supported: false, state: 'no_program', config_exists: false,
+					encrypted: 0, plain: 0, empty: 0, key_source: 'none', key_path: '', config_path: '' };
+			}) ]);
+	},
 	render: function(data) {
-		var e = E, initial = data[0], binaryInitial = data[2];
+		var e = E, initial = data[0], binaryInitial = data[2], secretInitial = data[3];
 		var pathStyle = 'display:block;width:100%;max-width:56rem;min-width:0;box-sizing:border-box';
 		var program = e('input', { 'id': 'dnet-program-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.program_path, placeholder: '/mnt/sda1/overlay/usr/bin/dnet' });
 		var config = e('input', { 'id': 'dnet-config-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.config_path, placeholder: '/mnt/sda1/.dnet_config.yaml' });
@@ -84,6 +95,100 @@ return view.extend({
 		var binaryMessage = e('p', { 'class': 'cbi-value-description', 'style': 'margin:0.4em 0 0' }, '程序不存在时，启用服务会自动下载；缺少的配置文件也会自动创建。');
 		var job = e('pre', { 'style': 'white-space:pre-wrap;max-height:22em;overflow:auto' }, '尚未检查更新。');
 		var upgradeButton;
+		/* ---- 配置加密 ---- */
+		var secretBadge = e('span', { 'class': 'label' }, '读取中…');
+		var secretSummary = e('p', { 'class': 'cbi-value-description', 'style': 'margin:0.2em 0 0' }, '');
+		var secretPaths = e('p', { 'class': 'cbi-value-description', 'style': 'margin:0;white-space:pre-wrap;word-break:break-all' }, '');
+		var secretHint = e('p', { 'class': 'cbi-value-description', 'style': 'margin:0.5em 0 0;color:#c0392b' }, '');
+		var secretInitBtn, secretEncryptBtn, secretDecryptBtn;
+		function applySecret(s) {
+			if (!s) return;
+			var configPath = s.config_path || '（未知，请先保存配置）';
+			var keyPath = s.key_path || '（未知）';
+			var states = {
+				'encrypted': [ '已加密', 'label success' ],
+				'key_only': [ '已生成主密钥，配置仍为明文', 'label warning' ],
+				'plain': [ '未加密（明文）', 'label' ],
+				'missing_key': [ '缺少主密钥，服务无法启动', 'label error' ],
+				'no_config': [ '尚未创建配置文件', 'label' ],
+				'no_program': [ '程序不可用', 'label error' ]
+			};
+			var view = states[s.state] || [ '未知', 'label' ];
+			secretBadge.textContent = view[0];
+			secretBadge.className = view[1];
+			var summary = '敏感字段：已加密 ' + (s.encrypted || 0) + ' 个';
+			if (s.plain > 0) summary += '，明文 ' + s.plain + ' 个';
+			if (s.empty > 0) summary += '，空 ' + s.empty + ' 个';
+			secretSummary.textContent = summary;
+			var keyText = s.key_source == 'none' ?
+				'未生成（' + keyPath + '）' :
+				keyPath + (s.key_source == 'env' ? '（来自环境变量）' : '');
+			secretPaths.textContent = '配置文件：' + configPath + '\n主密钥：' + keyText;
+			var hint = '';
+			if (!s.supported)
+				hint = '当前 D-NET 版本不支持配置加密，请先升级到 v0.2.7 及以上。';
+			else if (s.state == 'missing_key')
+				hint = '配置里有密文但找不到主密钥：请恢复原来的 master.key。不要重新生成——新密钥解不开旧密文。';
+			else if (s.state == 'key_only')
+				hint = '主密钥已就绪，点「一键加密」把现有明文密钥迁移为密文。';
+			else if (s.state == 'plain')
+				hint = '尚未生成主密钥：先点「生成主密钥」，再执行加密。';
+			secretHint.textContent = hint;
+			// 已有密文却缺主密钥时绝不能给「生成主密钥」——那会导致旧密文永久解不开。
+			if (secretInitBtn) secretInitBtn.style.display = (s.supported && s.config_exists && s.encrypted == 0 && s.key_source == 'none') ? '' : 'none';
+			if (secretEncryptBtn) secretEncryptBtn.style.display = (s.supported && s.config_exists && s.key_source != 'none' && (s.plain > 0 || s.encrypted == 0)) ? '' : 'none';
+			if (secretDecryptBtn) secretDecryptBtn.style.display = (s.supported && s.encrypted > 0) ? '' : 'none';
+		}
+		function showKeyModal(key, path) {
+			var field = e('input', { 'class': 'cbi-input-text', 'readonly': 'readonly', 'value': key || '',
+				'style': 'width:100%;font-family:monospace;box-sizing:border-box',
+				'click': function(ev) { ev.target.select(); } });
+			var copy = function() {
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					return navigator.clipboard.writeText(key).then(function() { notify('主密钥已复制'); })
+						.catch(function() { field.select(); notify('浏览器拒绝了剪贴板访问，请手动复制', true); });
+				}
+				field.select();
+				notify('已全选，请按 Ctrl+C 复制');
+			};
+			ui.showModal('主密钥已生成', [
+				e('p', {}, '请立即把下面的密钥离线保存（密码管理器 / U 盘）。丢了它，已加密的云厂商密钥和 ACME 账号密钥将无法恢复。'),
+				field,
+				e('p', { 'class': 'cbi-value-description' }, '文件位置：' + path + '（权限 0600）'),
+				e('button', { 'class': 'cbi-button cbi-button-action', 'click': copy }, '复制到剪贴板')
+			], [ [ '我已保存', function() { ui.hideModal(); }, 'cbi-button cbi-button-positive' ] ]);
+		}
+		function secretCall(kind) {
+			var call = kind == 'init' ? callSecretInit : (kind == 'encrypt' ? callSecretEncrypt : callSecretDecrypt);
+			return call().then(function(r) {
+				if (r && r.status) applySecret(r.status);
+				if (!r || !r.ok) {
+					notify((r && r.error) || '操作失败', true);
+					return;
+				}
+				if (kind == 'init') {
+					showKeyModal(r.key, r.key_path);
+					notify('主密钥已生成，请立即离线备份');
+				} else if (kind == 'encrypt') {
+					notify('配置已加密，D-NET 已重启');
+				} else {
+					notify('配置已解密为明文，建议确认后尽快重新加密', true);
+				}
+			}).catch(function(err) {
+				notify('操作失败：' + (err.message || err), true);
+			});
+		}
+		function confirmSecret(kind) {
+			var text = kind == 'encrypt' ?
+				'将把配置里的云厂商密钥、ACME 账号密钥、证书私钥、Webhook 地址加密后落盘，并重启 D-NET。原文件会备份为 .bak.<时间>。' :
+				'将把配置里的密钥字段解密成明文并重启 D-NET。明文会留在磁盘上，只建议在更换主密钥时临时使用。';
+			ui.showModal(kind == 'encrypt' ? '确认加密配置' : '确认解密配置', [ e('p', {}, text) ], [
+				[ '取消', function() { ui.hideModal(); }, 'cbi-button' ],
+				[ kind == 'encrypt' ? '开始加密' : '解密为明文',
+					function() { ui.hideModal(); return secretCall(kind); },
+					'cbi-button ' + (kind == 'encrypt' ? 'cbi-button-positive' : 'cbi-button-negative') ]
+			]);
+		}
 		var previousBootstrapStatus = binaryInitial.status;
 		var upgradePending = false; // 本页发起过升级、等待结果通知
 		function formatBytes(value) {
@@ -223,6 +328,26 @@ return view.extend({
 				]),
 			]),
 			e('div', { 'class': 'cbi-section' }, [
+				e('h3', {}, '配置加密'),
+				e('p', { 'class': 'cbi-value-description', 'style': 'margin-top:0' },
+					'加密配置里的云厂商密钥、ACME 账号密钥、证书私钥和 Webhook 地址。它只防「配置文件被看到」，不防拿到 root 或拆走闪存的人。'),
+				e('div', { 'class': 'cbi-value' }, [
+					e('label', { 'class': 'cbi-value-title' }, '加密状态'),
+					e('div', { 'class': 'cbi-value-field' }, [ secretBadge, secretSummary ])
+				]),
+				e('div', { 'class': 'cbi-value' }, [
+					e('label', { 'class': 'cbi-value-title' }, '路径'),
+					e('div', { 'class': 'cbi-value-field' }, [ secretPaths ])
+				]),
+				e('div', { 'style': 'display:flex;flex-wrap:wrap;gap:0.5em' }, [
+					(secretInitBtn = button('生成主密钥', 'cbi-button-action', function() { return secretCall('init'); })),
+					(secretEncryptBtn = button('一键加密', 'cbi-button-positive', function() { return confirmSecret('encrypt'); })),
+					(secretDecryptBtn = button('解密为明文', 'cbi-button-negative', function() { return confirmSecret('decrypt'); })),
+					button('刷新状态', '', function() { return callSecretStatus().then(applySecret); })
+				]),
+				secretHint
+			]),
+			e('div', { 'class': 'cbi-section' }, [
 				e('h3', {}, '版本升级'),
 				e('div', { 'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:0.5em' }, [
 					e('p', { 'style': 'margin:0' }, '检查和升级使用已保存的应用程序路径。'),
@@ -240,6 +365,7 @@ return view.extend({
 			])
 		]);
 		upgradeButton.style.display = 'none';
+		applySecret(secretInitial);
 		if (data[1].output)
 			job.textContent = data[1].output + (data[1].exit_code ? '\n退出码：' + data[1].exit_code : '');
 		updateUpgradeButton(data[1]);

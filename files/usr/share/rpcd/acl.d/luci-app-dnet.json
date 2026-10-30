@@ -1,7 +1,7 @@
 {
   "luci-app-dnet": {
     "description": "Manage D-NET service",
-    "read": { "ubus": { "luci.dnet": [ "status", "update_status", "binary_status" ] }, "uci": [ "dnet" ] },
-    "write": { "ubus": { "luci.dnet": [ "settings_save", "settings_apply", "update_start" ] }, "uci": [ "dnet" ] }
+    "read": { "ubus": { "luci.dnet": [ "status", "update_status", "binary_status", "secret_status" ] }, "uci": [ "dnet" ] },
+    "write": { "ubus": { "luci.dnet": [ "settings_save", "settings_apply", "update_start", "secret_init", "secret_encrypt", "secret_decrypt" ] }, "uci": [ "dnet" ] }
   }
 }

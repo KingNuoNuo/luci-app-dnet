@@ -12,10 +12,10 @@ upgrade the release published by **KingNuoNuo/dnet**, and jump to the D-NET web 
 Prebuilt package (architecture independent, OpenWrt 23.05+ / QWRT):
 
 ```sh
-opkg install luci-app-dnet_1.0.0-18_all.ipk
+opkg install luci-app-dnet_1.0.0-19_all.ipk
 ```
 
-Or upload `dist/luci-app-dnet_1.0.0-18_all.ipk` to the router and install it
+Or upload `dist/luci-app-dnet_1.0.0-19_all.ipk` to the router and install it
 from there. Then open **Services → D-NET**, set the paths, and enable the
 service.
 
@@ -55,6 +55,12 @@ Installing the package neither checks whether D-NET exists nor starts it.
 - The upgrade button also appears when the update log reports an unparseable
   current version instead of staying hidden behind a failed check.
 - The Web button opens the current router host on TCP port 9877.
+- The **Config encryption** section drives the binary's `-secret` commands with
+  the configured config path: it shows how many fields are encrypted, where the
+  master key lives, generates a key (displayed once for offline backup),
+  encrypts the existing plaintext in place, and decrypts it back when rotating
+  keys. It never offers "generate key" while the config already holds ciphertext,
+  so old data cannot be made unreadable by accident.
 
 ## Build
 
@@ -67,7 +73,7 @@ make package/luci-app-dnet/compile V=s
 A prebuilt `all` architecture IPK is produced by a dependency-free script:
 
 ```sh
-python3 build_ipk.py            # default 1.0.0-18
+python3 build_ipk.py            # default 1.0.0-19
 python3 build_ipk.py 1.0.0-19   # other release number
 ```
 

@@ -23,6 +23,105 @@ function normalized_path(s, filename) {
 	return s;
 }
 
+/* Run a command and capture its combined output (ucode has no exec-with-output). */
+function run_capture(cmd) {
+	/* 这个 busybox 上的 ucode 没有 rand()，用 clock 的微秒部分做后缀即可。 */
+	let tmp = '/tmp/.dnet-run-' + time(0) + '-' + clock()[1];
+	let rc = system(cmd + ' >' + q(tmp) + ' 2>&1');
+	let out = readfile(tmp) || '';
+	system('rm -f ' + q(tmp));
+	return { code: rc, output: out };
+}
+
+function program_path() {
+	return normalized_path(cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet'), 'dnet');
+}
+
+function config_path() {
+	return normalized_path(cfg('config_path', '/mnt/sda1/.dnet_config.yaml'), '.dnet_config.yaml');
+}
+
+function master_key_path(config) {
+	let env = getenv('DNET_SECRET_KEY_FILE');
+	if (env) return env;
+	let dir = replace(config, /\/[^\/]*$/, '');
+	return (dir || '') + '/master.key';
+}
+
+function secret_unsupported(out) {
+	return match(out, /flag provided but not defined|invalid value .*for flag -secret|unknown flag/);
+}
+
+/*
+ * 加密状态：优先读 dnet -secret status 末尾的机读行（#secret ...），
+ * 老版本没有这一行时退化为统计配置文件里的 enc:v1: 数量。
+ */
+function secret_state(program, config) {
+	let s = {
+		ok: true, program_path: program, config_path: config,
+		config_exists: system('[ -f ' + q(config) + ' ]') == 0,
+		key_path: master_key_path(config),
+		key_exists: false, env_key: (getenv('DNET_SECRET_KEY') || '') != '',
+		key_source: 'none', encrypted: 0, plain: 0, empty: 0,
+		supported: true, state: 'no_config', output: ''
+	};
+	s.key_exists = system('[ -f ' + q(s.key_path) + ' ]') == 0;
+	if (s.env_key) s.key_source = 'env';
+	else if (s.key_exists) s.key_source = 'file';
+	if (!s.config_exists) return s;
+	if (system('[ -x ' + q(program) + ' ]') != 0) {
+		s.ok = false; s.error = 'D-NET 程序不存在或不可执行'; s.state = 'no_program';
+		return s;
+	}
+	let r = run_capture(q(program) + ' -c ' + q(config) + ' -secret status');
+	s.output = trim(r.output || '');
+	let m = match(r.output, /#secret encrypted=(\d+) plain=(\d+) empty=(\d+) key=(none|file|env)/);
+	if (m) {
+		s.encrypted = int(m[1]);
+		s.plain = int(m[2]);
+		s.empty = int(m[3]);
+		s.key_source = m[4];
+	} else {
+		let data = readfile(config) || '';
+		s.supported = secret_unsupported(r.output) ? false : true;
+		s.encrypted = length(split(data, 'enc:v1:')) - 1;
+	}
+	if (s.key_source == 'env') s.env_key = true;
+	else if (s.key_source == 'file') s.key_exists = true;
+	let keyed = s.key_source != 'none';
+	if (s.encrypted > 0 && !keyed) s.state = 'missing_key';
+	else if (s.encrypted > 0) s.state = 'encrypted';
+	else if (keyed) s.state = 'key_only';
+	else s.state = 'plain';
+	return s;
+}
+
+function secret_run(action) {
+	let program = program_path(), config = config_path();
+	if (!program || !config) return { ok: false, error: '程序或配置路径格式无效' };
+	let s = secret_state(program, config);
+	if (!s.config_exists) return { ok: false, error: '配置文件不存在，请先在 D-NET 中保存配置', status: s };
+	if (action == 'init' && s.key_source != 'none')
+		return { ok: false, error: '主密钥已存在：' + s.key_path, status: s };
+	/* 配置已是密文但缺少主密钥时，绝不能在这里生成新密钥 —— 新密钥解不开旧密文。 */
+	if (action == 'init' && s.encrypted > 0)
+		return { ok: false, error: '配置里已有密文但缺少主密钥，请先恢复原来的 master.key', status: s };
+	let r = run_capture(q(program) + ' -c ' + q(config) + ' -secret ' + action);
+	let out = trim(r.output || '');
+	if (r.code != 0) {
+		let hint = secret_unsupported(out) ? '当前 D-NET 版本不支持配置加密，请先升级到 v0.2.7 及以上' : (out || '操作失败');
+		return { ok: false, error: hint, output: out, status: secret_state(program, config) };
+	}
+	let result = { ok: true, output: out, key: '', key_path: s.key_path, status: secret_state(program, config) };
+	if (action == 'init') {
+		let m = match(out, /([0-9a-f]{64})/);
+		result.key = m ? m[1] : '';
+	}
+	if (action != 'status')
+		system('/etc/init.d/dnet restart >/dev/null 2>&1');
+	return result;
+}
+
 const methods = {
 	status: { call: function() {
 		let program = cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet');
@@ -87,6 +186,12 @@ const methods = {
 	binary_status: { call: function() {
 		let parts = split(trim(readfile('/var/run/dnet-luci/bootstrap_status') || 'idle\t0\t0\t0\t'), '\t');
 		return { status: parts[0] || 'idle', percent: int(parts[1] || '0'), downloaded: int(parts[2] || '0'), total: int(parts[3] || '0'), message: parts[4] || '' };
-	} }
+	} },
+	secret_status: { call: function() {
+		return secret_state(program_path(), config_path());
+	} },
+	secret_init: { call: function() { return secret_run('init'); } },
+	secret_encrypt: { call: function() { return secret_run('encrypt'); } },
+	secret_decrypt: { call: function() { return secret_run('decrypt'); } }
 };
 return { 'luci.dnet': methods };
