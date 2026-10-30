@@ -85,6 +85,7 @@ return view.extend({
 		var job = e('pre', { 'style': 'white-space:pre-wrap;max-height:22em;overflow:auto' }, '尚未检查更新。');
 		var upgradeButton;
 		var previousBootstrapStatus = binaryInitial.status;
+		var upgradePending = false; // 本页发起过升级、等待结果通知
 		function formatBytes(value) {
 			if (!value) return '0 B';
 			var units = [ 'B', 'KB', 'MB', 'GB' ], n = value, i = 0;
@@ -93,7 +94,9 @@ return view.extend({
 		}
 		function updateBinaryProgress(result, isEnabled, isRunning) {
 			var active = [ 'resolving', 'verifying', 'downloading', 'installing', 'creating_config', 'starting' ].indexOf(result.status) != -1;
-			if (isRunning) {
+			// 升级/安装过程中即使 D-NET 服务仍在运行，也要把进度显示出来；
+			// 只有既没有任务、服务又正常运行时才显示“服务正在运行”。
+			if (isRunning && !active && result.status != 'done') {
 				binaryProgress.style.display = 'none';
 				binaryMessage.textContent = 'D-NET 服务正在运行。';
 				updateState(isEnabled, true);
@@ -113,7 +116,7 @@ return view.extend({
 				state.className = 'label warning';
 			}
 			else if (result.status == 'done') {
-				binaryMessage.textContent = 'D-NET 程序已下载，缺失配置已创建，服务已启动。';
+				binaryMessage.textContent = 'D-NET 程序已就绪，服务已启动。';
 				state.textContent = '已启动';
 				state.className = 'label success';
 			}
@@ -126,7 +129,7 @@ return view.extend({
 				binaryMessage.textContent = '程序不存在时，启用服务会自动下载；缺少的配置文件也会自动创建。';
 				updateState(isEnabled);
 			}
-			if (result.status == 'done' && previousBootstrapStatus != 'done')
+			if (result.status == 'done' && previousBootstrapStatus != 'done' && !upgradePending)
 				notify('D-NET 已下载并启动');
 			else if (result.status == 'error' && previousBootstrapStatus != 'error')
 				notify('D-NET 自动准备失败：' + (result.message || '未知错误'), true);
@@ -167,17 +170,29 @@ return view.extend({
 			state.className = isRunning ? 'label success' : (isEnabled ? 'label warning' : 'label');
 		}
 		function runUpdate(mode) {
-			if (mode == 'check') upgradeButton.style.display = 'none';
-			job.textContent = '正在提交任务…';
+			if (mode == 'check') {
+				upgradeButton.style.display = 'none';
+			} else {
+				upgradePending = true;
+			}
+			job.textContent = mode == 'update' ? '正在提交升级任务…' : '正在提交任务…';
 			return callUpdate(mode).then(function(r) {
 				if (!r || !r.ok) {
+					upgradePending = false;
 					job.textContent = r && r.error ? r.error : '无法启动更新任务';
 					return;
 				}
-				job.textContent = '正在检查或升级…';
+				job.textContent = mode == 'update' ? '正在通过 LuCI 下载并校验升级…' : '正在检查或升级…';
 			}).catch(function(err) {
+				upgradePending = false;
 				job.textContent = '操作失败：' + (err.message || err);
 			});
+		}
+		function binaryProgressText(result) {
+			if (!result) return '正在通过 LuCI 下载并校验升级…';
+			if (result.status == 'downloading')
+				return '正在下载 D-NET：' + (result.percent || 0) + '%（' + formatBytes(result.downloaded) + (result.total ? ' / ' + formatBytes(result.total) : '') + '）';
+			return result.message || '正在通过 LuCI 下载并校验升级…';
 		}
 		var root = e('div', { 'class': 'dnet-page' }, [
 			e('h2', {}, 'D-NET'),
@@ -233,8 +248,22 @@ return view.extend({
 				updateState(v[0].enabled, v[0].running);
 				updateBinaryProgress(v[2], v[0].enabled, v[0].running);
 				updateUpgradeButton(v[1]);
-				if (v[1].status == 'running') job.textContent = v[1].mode == 'update' ? '正在通过 LuCI 下载并校验升级…' : '正在检查或升级…';
-				else if (v[1].output) job.textContent = v[1].output + (v[1].exit_code ? '\n退出码：' + v[1].exit_code : '');
+				if (v[1].mode == 'update' && v[1].status == 'running') {
+					job.textContent = binaryProgressText(v[2]);
+				} else if (v[1].mode == 'update' && v[1].status == 'done' && upgradePending) {
+					upgradePending = false;
+					if (v[1].exit_code === '0') {
+						job.textContent = '升级完成，D-NET 已重启。';
+						notify('D-NET 升级完成，服务已重启');
+					} else {
+						job.textContent = '升级失败' + (v[1].output ? '：\n' + v[1].output : '') + (v[1].exit_code ? '\n退出码：' + v[1].exit_code : '');
+						notify('D-NET 升级失败：' + ((v[2] && v[2].message) || '请查看程序状态'), true);
+					}
+				} else if (v[1].status == 'running') {
+					job.textContent = '正在检查或升级…';
+				} else if (v[1].output) {
+					job.textContent = v[1].output + (v[1].exit_code ? '\n退出码：' + v[1].exit_code : '');
+				}
 			});
 		});
 		return root;

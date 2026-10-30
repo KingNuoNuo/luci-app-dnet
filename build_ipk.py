@@ -10,7 +10,7 @@ import tarfile
 
 root = Path(__file__).resolve().parent
 pkg = root / 'files'
-version = sys.argv[1] if len(sys.argv) > 1 else '1.0.0-17'
+version = sys.argv[1] if len(sys.argv) > 1 else '1.0.0-18'
 out_dir = root / 'dist'
 out_dir.mkdir(exist_ok=True)
 out = out_dir / f'luci-app-dnet_{version}_all.ipk'
