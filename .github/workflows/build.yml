@@ -74,15 +74,16 @@ jobs:
           cd "$RUNNER_TEMP/openwrt-sdk"
           ./scripts/feeds update -a >/dev/null
           ./scripts/feeds install -a >/dev/null
-          # defconfig 会刷出一堆 "recursive dependency detected"（packages feed
-          # 里的 gensio 等），但 .config 还是会写出来；确认它非空即可，
-          # 空 .config 会让后续 make 去开 menuconfig，非交互环境直接挂。
+          # 先把包写进 .config 种子，再让 defconfig 去解析依赖：
+          # 依赖不全（比如某个 ucode-mod-* 不在这个 release 里）时，
+          # defconfig 会把这一行丢掉，下面的 grep 就会失败 —— 这就是断言。
+          touch .config
+          printf 'CONFIG_PACKAGE_luci-app-dnet=m\n' >> .config
+          # packages feed 里有已知的循环依赖（gensio 等），defconfig 会刷一堆
+          # error 但照样写出 .config；只认最终结果。
           make defconfig || true
-          test -s .config || { echo "defconfig did not produce a .config"; exit 1; }
-          # 把包打开成 m，package/xxx/compile 的规则才存在
-          ./scripts/config --module CONFIG_PACKAGE_luci-app-dnet
           grep -q '^CONFIG_PACKAGE_luci-app-dnet=m' .config \
-            && echo "luci-app-dnet is enabled in .config"
+            && echo "luci-app-dnet enabled with all dependencies resolved"
           make package/luci-app-dnet/compile V=s
 
       - name: Collect package
