@@ -58,3 +58,9 @@ endef
 define Package/$(PKG_NAME)/conffiles
 /etc/config/dnet
 endef
+
+# call BuildPackage - OpenWrt buildroot signature
+# 上面这行不是注释装饰：include/scan.mk 用 grep 在 Makefile 原文里找
+# "call BuildPackage" 才把这个包纳入扫描。luci.mk 里的 eval 是 include
+# 进来的，grep 看不到 —— 少了这个标记，包就不会进 tmp/.packageinfo，
+# defconfig 不认识 CONFIG_PACKAGE_luci-app-dnet，编译目标也就不存在。
