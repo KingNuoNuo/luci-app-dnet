@@ -9,21 +9,23 @@ import sys
 import tarfile
 
 root = Path(__file__).resolve().parent
-pkg = root / 'files'
-version = sys.argv[1] if len(sys.argv) > 1 else '1.0.0-20'
+# Standard LuCI layout: root/ goes to /, htdocs/ goes to /www.
+payload = [(root / 'root', ''), (root / 'htdocs', 'www')]
+version = sys.argv[1] if len(sys.argv) > 1 else '1.0.0-21'
 out_dir = root / 'dist'
 out_dir.mkdir(exist_ok=True)
 out = out_dir / f'luci-app-dnet_{version}_all.ipk'
 
 control = f'''Package: luci-app-dnet
 Version: {version}
-Depends: luci-base, rpcd-mod-ucode, curl, jq, ca-bundle
+Depends: luci-base, rpcd-mod-ucode, ucode-mod-fs, curl, jq, ca-bundle
 Architecture: all
 Maintainer: local
+License: MIT
 Description: LuCI management interface for D-NET
 Section: luci
 Installed-Size: 16
-Source: feeds/luci/applications/luci-app-dnet
+Source: package/luci-app-dnet
 SourceName: luci-app-dnet
 '''.encode()
 
@@ -70,10 +72,13 @@ control_files = [('.', None, 0o755), ('./control', control, 0o644), ('./conffile
                  ('./postinst', postinst, 0o755)]
 
 data_files = [('.', None, 0o755)]
-for f in sorted(pkg.rglob('*')):
-    if f.is_file():
-        rel = f.relative_to(pkg).as_posix()
-        data_files.append(('./' + rel, f.read_bytes(), 0o755 if rel in exec_files else 0o644))
+for base, prefix in payload:
+    for f in sorted(base.rglob('*')):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(base).as_posix()
+        dest = prefix + '/' + rel if prefix else rel
+        data_files.append(('./' + dest, f.read_bytes(), 0o755 if rel in exec_files else 0o644))
 
 dirs = set()
 for name, _, _ in data_files:
@@ -101,6 +106,6 @@ with out.open('wb') as raw:
                 tar.addfile(info, io.BytesIO(data))
 
 digest = hashlib.sha256(out.read_bytes()).hexdigest()
-(out_dir / 'SHA256SUMS').write_text(f'{digest} *{out.name}\n')
+(out_dir / 'SHA256SUMS').write_bytes(f'{digest} *{out.name}\n'.encode())
 print(out)
 print(digest)

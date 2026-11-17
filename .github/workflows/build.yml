@@ -1,0 +1,83 @@
+name: Build IPK
+
+# 用官方 SDK 真编一遍：证明这个目录能直接放进 OpenWrt 源码树
+# （package/luci-app-dnet）在 menuconfig 里出现并编译通过。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Makefile'
+      - 'root/**'
+      - 'htdocs/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: SDK ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: 23.05.5
+            sdk: openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - release: 24.10.4
+            sdk: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download SDK ${{ matrix.release }}
+        run: |
+          set -euo pipefail
+          url="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64/${{ matrix.sdk }}"
+          echo "$url"
+          curl -fsSL --retry 3 --retry-delay 2 -o sdk.tar "$url"
+          mkdir -p sdk
+          case "${{ matrix.sdk }}" in
+            *.zst) tar --zstd -xf sdk.tar -C sdk --strip-components=1 ;;
+            *)     tar -xf sdk.tar -C sdk --strip-components=1 ;;
+          esac
+          rm -f sdk.tar
+
+      - name: Drop the package into the source tree
+        run: |
+          set -euo pipefail
+          # 这里是「用户把仓库 clone 到 package/luci-app-dnet」的等价动作。
+          mkdir -p sdk/package/luci-app-dnet
+          rsync -a --exclude .git --exclude dist --exclude _fake \
+            ./ sdk/package/luci-app-dnet/
+          ls -l sdk/package/luci-app-dnet
+
+      - name: Build luci-app-dnet
+        working-directory: sdk
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a >/dev/null
+          ./scripts/feeds install -a >/dev/null
+          make defconfig
+          # menuconfig 里能看到这个包，说明 Makefile 被正确识别。
+          grep -q 'CONFIG_PACKAGE_luci-app-dnet' .config && echo "package visible in menuconfig"
+          make package/luci-app-dnet/compile V=s
+
+      - name: Collect IPK
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find sdk/bin -name 'luci-app-dnet*.ipk' -exec cp -v {} out/ \;
+          ls -l out
+          cd out && sha256sum -- *.ipk > SHA256SUMS && cat SHA256SUMS
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipk-${{ matrix.release }}
+          path: out/*
+          retention-days: 14
