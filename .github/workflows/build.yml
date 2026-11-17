@@ -1,7 +1,9 @@
-name: Build IPK
+name: Build package
 
 # 用官方 SDK 真编一遍：证明这个目录能直接放进 OpenWrt 源码树
 # （package/luci-app-dnet）在 menuconfig 里出现并编译通过。
+# 23.05 / 24.10 输出 ipk，25.12 起包管理器换成 apk —— 同一份源码，
+# 产物格式由 SDK 决定，包本身不用改。
 on:
   push:
     branches: [main]
@@ -29,6 +31,13 @@ jobs:
             sdk: openwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
           - release: 24.10.4
             sdk: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+          - release: 25.12.6
+            sdk: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+    env:
+      # 放在 runner 的临时目录，绝不能落在仓库里：
+      # 否则后面 rsync ./ 会把解压出来的 SDK 再递归复制一次。
+      SDK_DIR: ${{ runner.temp }}/openwrt-sdk
+      OUT_DIR: ${{ runner.temp }}/out
 
     steps:
       - name: Checkout
@@ -39,45 +48,45 @@ jobs:
           set -euo pipefail
           url="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64/${{ matrix.sdk }}"
           echo "$url"
-          curl -fsSL --retry 3 --retry-delay 2 -o sdk.tar "$url"
-          mkdir -p sdk
+          curl -fsSL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/sdk.tar" "$url"
+          mkdir -p "$SDK_DIR"
           case "${{ matrix.sdk }}" in
-            *.zst) tar --zstd -xf sdk.tar -C sdk --strip-components=1 ;;
-            *)     tar -xf sdk.tar -C sdk --strip-components=1 ;;
+            *.zst) tar --zstd -xf "$RUNNER_TEMP/sdk.tar" -C "$SDK_DIR" --strip-components=1 ;;
+            *)     tar -xf "$RUNNER_TEMP/sdk.tar" -C "$SDK_DIR" --strip-components=1 ;;
           esac
-          rm -f sdk.tar
+          rm -f "$RUNNER_TEMP/sdk.tar"
 
       - name: Drop the package into the source tree
         run: |
           set -euo pipefail
-          # 这里是「用户把仓库 clone 到 package/luci-app-dnet」的等价动作。
-          mkdir -p sdk/package/luci-app-dnet
-          rsync -a --exclude .git --exclude dist --exclude _fake \
-            ./ sdk/package/luci-app-dnet/
-          ls -l sdk/package/luci-app-dnet
+          # 等价于用户把仓库 clone 到 package/luci-app-dnet
+          mkdir -p "$SDK_DIR/package/luci-app-dnet"
+          rsync -a --exclude .git ./ "$SDK_DIR/package/luci-app-dnet/"
+          ls -l "$SDK_DIR/package/luci-app-dnet"
 
       - name: Build luci-app-dnet
-        working-directory: sdk
         run: |
           set -euo pipefail
+          cd "$SDK_DIR"
           ./scripts/feeds update -a >/dev/null
           ./scripts/feeds install -a >/dev/null
           make defconfig
-          # menuconfig 里能看到这个包，说明 Makefile 被正确识别。
+          # 包在 menuconfig 里可见，说明 Makefile 和依赖都被正确识别
           grep -q 'CONFIG_PACKAGE_luci-app-dnet' .config && echo "package visible in menuconfig"
           make package/luci-app-dnet/compile V=s
 
-      - name: Collect IPK
+      - name: Collect package
         run: |
           set -euo pipefail
-          mkdir -p out
-          find sdk/bin -name 'luci-app-dnet*.ipk' -exec cp -v {} out/ \;
-          ls -l out
-          cd out && sha256sum -- *.ipk > SHA256SUMS && cat SHA256SUMS
+          mkdir -p "$OUT_DIR"
+          find "$SDK_DIR/bin" -type f \( -name 'luci-app-dnet*.ipk' -o -name 'luci-app-dnet*.apk' \) \
+            -exec cp -v {} "$OUT_DIR"/ \;
+          ls -l "$OUT_DIR"
+          cd "$OUT_DIR" && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ipk-${{ matrix.release }}
-          path: out/*
+          name: package-${{ matrix.release }}
+          path: ${{ runner.temp }}/out/*
           retention-days: 14
