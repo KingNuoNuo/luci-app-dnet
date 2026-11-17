@@ -33,12 +33,6 @@ jobs:
             sdk: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
           - release: 25.12.6
             sdk: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
-    env:
-      # 放在 runner 的临时目录，绝不能落在仓库里：
-      # 否则后面 rsync ./ 会把解压出来的 SDK 再递归复制一次。
-      SDK_DIR: ${{ runner.temp }}/openwrt-sdk
-      OUT_DIR: ${{ runner.temp }}/out
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,6 +40,9 @@ jobs:
       - name: Download SDK ${{ matrix.release }}
         run: |
           set -euo pipefail
+          # 解压到 runner 的临时目录，绝不能落在仓库里：
+          # 否则后面 rsync ./ 会把解压出来的 SDK 再递归复制一次。
+          SDK_DIR="$RUNNER_TEMP/openwrt-sdk"
           url="https://downloads.openwrt.org/releases/${{ matrix.release }}/targets/x86/64/${{ matrix.sdk }}"
           echo "$url"
           curl -fsSL --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/sdk.tar" "$url"
@@ -59,6 +56,7 @@ jobs:
       - name: Drop the package into the source tree
         run: |
           set -euo pipefail
+          SDK_DIR="$RUNNER_TEMP/openwrt-sdk"
           # 等价于用户把仓库 clone 到 package/luci-app-dnet
           mkdir -p "$SDK_DIR/package/luci-app-dnet"
           rsync -a --exclude .git ./ "$SDK_DIR/package/luci-app-dnet/"
@@ -67,7 +65,7 @@ jobs:
       - name: Build luci-app-dnet
         run: |
           set -euo pipefail
-          cd "$SDK_DIR"
+          cd "$RUNNER_TEMP/openwrt-sdk"
           ./scripts/feeds update -a >/dev/null
           ./scripts/feeds install -a >/dev/null
           make defconfig
@@ -78,8 +76,10 @@ jobs:
       - name: Collect package
         run: |
           set -euo pipefail
+          OUT_DIR="$RUNNER_TEMP/out"
           mkdir -p "$OUT_DIR"
-          find "$SDK_DIR/bin" -type f \( -name 'luci-app-dnet*.ipk' -o -name 'luci-app-dnet*.apk' \) \
+          find "$RUNNER_TEMP/openwrt-sdk/bin" -type f \
+            \( -name 'luci-app-dnet*.ipk' -o -name 'luci-app-dnet*.apk' \) \
             -exec cp -v {} "$OUT_DIR"/ \;
           ls -l "$OUT_DIR"
           cd "$OUT_DIR" && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
