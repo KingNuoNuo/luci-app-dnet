@@ -103,3 +103,52 @@ jobs:
           name: package-${{ matrix.release }}
           path: ${{ runner.temp }}/out/*
           retention-days: 14
+
+
+  release:
+    name: Publish Release
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: artifacts
+
+      - name: Prepare versioned release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          for release in 23.05.5 24.10.4 25.12.6; do
+            found=0
+            for file in "artifacts/package-$release/"*.ipk "artifacts/package-$release/"*.apk; do
+              [ -f "$file" ] || continue
+              name="$(basename "$file")"
+              cp "$file" "release/openwrt-${release}-${name}"
+              found=1
+            done
+            if [ "$found" -ne 1 ]; then
+              echo "::error::No package found for SDK $release"
+              exit 1
+            fi
+          done
+          cd release
+          shopt -s nullglob
+          sha256sum -- *.ipk *.apk > SHA256SUMS
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: D-NET LuCI build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
