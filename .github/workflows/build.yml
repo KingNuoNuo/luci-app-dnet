@@ -68,9 +68,14 @@ jobs:
           cd "$RUNNER_TEMP/openwrt-sdk"
           ./scripts/feeds update -a >/dev/null
           ./scripts/feeds install -a >/dev/null
-          make defconfig
-          # 包在 menuconfig 里可见，说明 Makefile 和依赖都被正确识别
-          grep -q 'CONFIG_PACKAGE_luci-app-dnet' .config && echo "package visible in menuconfig"
+          # 不跑 make defconfig：packages feed 里有已知的循环依赖（gensio 等），
+          # kconfig 会报 "recursive dependency detected" 并以 error 退出，
+          # tmp/ 下的包索引只写了一半，之后 make package/xxx/compile 会
+          # 报 "No rule to make target"。只建索引就够了。
+          [ -f .config ] || touch .config
+          make prepare-tmpinfo
+          grep -q '^Package: luci-app-dnet$' tmp/.packageinfo \
+            && echo "luci-app-dnet registered in the package index"
           make package/luci-app-dnet/compile V=s
 
       - name: Collect package
