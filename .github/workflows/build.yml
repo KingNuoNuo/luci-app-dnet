@@ -21,7 +21,10 @@ permissions:
 jobs:
   build:
     name: SDK ${{ matrix.release }}
-    runs-on: ubuntu-latest
+    # 必须钉在 24.04：ubuntu-latest 已迁移到 Ubuntu 26，coreutils 换成
+    # uutils，OpenWrt 的 prereq 检查里 `install --version | grep GNU coreutils`
+    # 会失败（Build dependency: Please install GNU 'install'）。
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -33,6 +36,9 @@ jobs:
             sdk: openwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
           - release: 25.12.6
             sdk: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+    env:
+      # 前置检查只认 GNU coreutils，容器/发行版一动就可能误报；工具本身都在。
+      FORCE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
