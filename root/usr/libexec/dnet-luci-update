@@ -16,7 +16,7 @@ if [ "$mode" = update ]; then
 	# 旧程序的版本号不是语义化版本（日期构建号、DEV 等）时，dnet -u 会拒绝自检，
 	# 而 bootstrap 只看发布资产，对任何已安装版本都能完成升级。
 	config=$(/sbin/uci -q get dnet.main.config_path || true)
-	[ -n "$config" ] || config=/mnt/sda1/.dnet_config.yaml
+	[ -n "$config" ] || config=/etc/dnet/.dnet_config.yaml
 	/usr/libexec/dnet-luci-bootstrap "$program" "$config" >>"$run/output" 2>&1 || rc=$?
 else
 	printf 'n\n' | "$program" -u >"$run/output" 2>&1 || rc=$?

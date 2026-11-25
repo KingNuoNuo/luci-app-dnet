@@ -8,8 +8,8 @@ start_service() {
 	config_load dnet
 	config_get_bool enabled main enabled 0
 	[ "$enabled" = 1 ] || return 0
-	config_get program main program_path /mnt/sda1/overlay/usr/bin/dnet
-	config_get conf main config_path /mnt/sda1/.dnet_config.yaml
+	config_get program main program_path /usr/bin/dnet
+	config_get conf main config_path /etc/dnet/.dnet_config.yaml
 	case "$program" in /*) ;; *) logger -t dnet "program path must be absolute"; return 1 ;; esac
 	if [ ! -e "$program" ]; then
 		mkdir -p /var/run/dnet-luci

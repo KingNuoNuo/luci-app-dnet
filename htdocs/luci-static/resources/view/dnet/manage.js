@@ -19,6 +19,21 @@ function notify(message, error) {
 	ui.addNotification(null, E('p', {}, message), error ? 'error' : 'info');
 }
 
+/* 开关勾反映的是 uci 配置（是否启用/开机自启），不是当前进程状态。
+ * 后端在启动失败时会把 enabled 回滚成 0，但前端之前只弹提示不回读，
+ * 于是出现「服务没起来、勾却还开着」。每次提交后都回读一次实际配置。 */
+function resyncEnabled(result) {
+	var enabled = document.getElementById('dnet-enabled');
+	if (!enabled)
+		return Promise.resolve(result);
+	return callStatus().then(function(s) {
+		enabled.checked = !!s.enabled;
+		return result;
+	}).catch(function() {
+		return result;
+	});
+}
+
 return view.extend({
 	handleSave: function() {
 		var program = document.getElementById('dnet-program-path');
@@ -30,15 +45,15 @@ return view.extend({
 		return callSave(program.value, config.value, enabled.checked ? '1' : '0').then(function(r) {
 			if (!r || !r.ok) {
 				notify(r && r.error ? r.error : '保存失败', true);
-				return false;
+				return resyncEnabled(false);
 			}
-		program.value = r.program_path || program.value;
-		config.value = r.config_path || config.value;
+			program.value = r.program_path || program.value;
+			config.value = r.config_path || config.value;
 			notify('设置已保存；服务运行状态未更改');
-			return true;
+			return resyncEnabled(true);
 		}).catch(function(err) {
 			notify('保存失败：' + (err.message || err), true);
-			return false;
+			return resyncEnabled(false);
 		});
 	},
 	handleReset: function() {
@@ -59,21 +74,23 @@ return view.extend({
 		return callApply(program.value, config.value, enabled.checked ? '1' : '0').then(function(r) {
 			if (!r || !r.ok) {
 				notify(r && r.error ? r.error : '保存并应用失败', true);
-				return false;
+				// 后端可能在启动失败后回滚 enabled=0，必须回读，否则勾会留在开着的位置。
+				return resyncEnabled(false);
 			}
 			program.value = r.program_path || program.value;
 			config.value = r.config_path || config.value;
 			if (r.pending) {
 				notify('未找到 D-NET 程序，已开始下载；完成后会自动创建缺少的配置文件并启动服务');
-				return true;
+				return resyncEnabled(true);
 			}
 			return callStatus().then(function(s) {
+				enabled.checked = !!s.enabled;
 				notify(s.enabled ? '设置已保存并应用，D-NET 服务已启动' : '设置已保存并应用，D-NET 服务已停止');
 				return true;
 			});
 		}).catch(function(err) {
 			notify('应用失败：' + (err.message || err), true);
-			return false;
+			return resyncEnabled(false);
 		});
 	},
 	load: function() {
@@ -87,8 +104,8 @@ return view.extend({
 	render: function(data) {
 		var e = E, initial = data[0], binaryInitial = data[2], secretInitial = data[3];
 		var pathStyle = 'display:block;width:100%;max-width:56rem;min-width:0;box-sizing:border-box';
-		var program = e('input', { 'id': 'dnet-program-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.program_path, placeholder: '/mnt/sda1/overlay/usr/bin/dnet' });
-		var config = e('input', { 'id': 'dnet-config-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.config_path, placeholder: '/mnt/sda1/.dnet_config.yaml' });
+		var program = e('input', { 'id': 'dnet-program-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.program_path, placeholder: '/usr/bin/dnet' });
+		var config = e('input', { 'id': 'dnet-config-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.config_path, placeholder: '/etc/dnet/.dnet_config.yaml' });
 		var enabled = e('input', { 'id': 'dnet-enabled', 'type': 'checkbox', 'class': 'cbi-input-checkbox', checked: initial.enabled });
 		var state = e('span', { 'class': 'label' }, initial.running ? '运行中' : (initial.enabled ? '已启用，未运行' : '已关闭'));
 		var binaryProgress = e('progress', { 'max': 100, 'value': 0, 'style': 'display:none;width:100%;max-width:36rem;height:1.2em' });
@@ -228,18 +245,19 @@ return view.extend({
 				state.className = 'label warning';
 			}
 			else if (result.status == 'done') {
-				binaryMessage.textContent = 'D-NET 程序已就绪，服务已启动。';
-				state.textContent = '已启动';
-				state.className = 'label success';
+				// bootstrap_status 是历史产物，服务停掉后仍会是 done。
+				// 必须以 isRunning 为准，否则关了服务页面还显示“已启动”。
+				binaryMessage.textContent = isRunning ? 'D-NET 程序已就绪，服务已启动。' : 'D-NET 程序已就绪，服务未运行。';
+				updateState(isEnabled, isRunning);
 			}
 			else if (result.status == 'error') {
 				binaryMessage.textContent = '自动准备失败：' + (result.message || '未知错误');
-				state.textContent = '启动失败';
-				state.className = 'label error';
+				// 用户主动关掉服务后，不应再拿旧的失败状态覆盖“已关闭”。
+				updateState(isEnabled, isRunning);
 			}
 			else {
 				binaryMessage.textContent = '程序不存在时，启用服务会自动下载；缺少的配置文件也会自动创建。';
-				updateState(isEnabled);
+				updateState(isEnabled, isRunning);
 			}
 			if (result.status == 'done' && previousBootstrapStatus != 'done' && !upgradePending)
 				notify('D-NET 已下载并启动');

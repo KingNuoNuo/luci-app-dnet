@@ -73,14 +73,22 @@ automatically.
 
 | Item | Default |
 | --- | --- |
-| Executable | `/mnt/sda1/overlay/usr/bin/dnet` |
-| Config file | `/mnt/sda1/.dnet_config.yaml` |
+| Executable | `/usr/bin/dnet` |
+| Config file | `/etc/dnet/.dnet_config.yaml` |
 | Service state | disabled |
 | Listen address | `:9877` (service runs `-c <config> -l :9877`) |
 
 Installing the package neither checks whether D-NET exists nor starts it.
 `/etc/config/dnet` is registered as a **conffile**, so upgrading the package
 keeps the paths you set in LuCI instead of resetting them.
+
+The D-NET binary is about 19 MB. If the router's overlay has little free
+space, keep both paths on external storage instead, e.g.
+`/mnt/sda1/dnet/dnet` and `/mnt/sda1/dnet/.dnet_config.yaml`. Move the whole
+configuration directory together: the master key (`master.key`), GeoIP
+databases (`dbip-country-lite.mmdb`, `GeoLite2-Country.mmdb`) and WAF state
+(`waf_state.json`) all live next to the config file, not next to the binary.
+Prefer a stable mount point over relying on `/mnt/sda1` surviving a reboot.
 
 ## Behavior
 

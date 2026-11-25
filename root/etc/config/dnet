@@ -1,4 +1,4 @@
 config dnet 'main'
 	option enabled '0'
-	option program_path '/mnt/sda1/overlay/usr/bin/dnet'
-	option config_path '/mnt/sda1/.dnet_config.yaml'
+	option program_path '/usr/bin/dnet'
+	option config_path '/etc/dnet/.dnet_config.yaml'

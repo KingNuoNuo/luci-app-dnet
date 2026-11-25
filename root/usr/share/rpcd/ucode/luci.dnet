@@ -34,11 +34,11 @@ function run_capture(cmd) {
 }
 
 function program_path() {
-	return normalized_path(cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet'), 'dnet');
+	return normalized_path(cfg('program_path', '/usr/bin/dnet'), 'dnet');
 }
 
 function config_path() {
-	return normalized_path(cfg('config_path', '/mnt/sda1/.dnet_config.yaml'), '.dnet_config.yaml');
+	return normalized_path(cfg('config_path', '/etc/dnet/.dnet_config.yaml'), '.dnet_config.yaml');
 }
 
 function master_key_path(config) {
@@ -124,8 +124,8 @@ function secret_run(action) {
 
 const methods = {
 	status: { call: function() {
-		let program = cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet');
-		let config = cfg('config_path', '/mnt/sda1/.dnet_config.yaml');
+		let program = cfg('program_path', '/usr/bin/dnet');
+		let config = cfg('config_path', '/etc/dnet/.dnet_config.yaml');
 		return { enabled: cfg('enabled', '0') == '1', running: system('pidof dnet >/dev/null 2>&1') == 0,
 			program_path: normalized_path(program, 'dnet') || program, config_path: normalized_path(config, '.dnet_config.yaml') || config,
 			web_port: 9877 };
@@ -161,6 +161,9 @@ const methods = {
 			' && /sbin/uci set dnet.main.config_path=' + q(c) +
 			' && /sbin/uci set dnet.main.enabled=' + (on ? '1' : '0') + ' && /sbin/uci commit dnet';
 		if (system(cmd) != 0) return { ok: false, error: '保存设置失败' };
+		/* bootstrap_status 是自动下载/启动的历史产物。开关切换时重置它，
+		 * 否则关掉服务后它仍是 done，页面会误显示“已启动”。 */
+		system('mkdir -p /var/run/dnet-luci; printf "idle\\t0\\t0\\t0\\t\\n" >/var/run/dnet-luci/bootstrap_status');
 		system(on ? 'rm -f /var/run/dnet-luci/bootstrap.cancel' : 'touch /var/run/dnet-luci/bootstrap.cancel');
 		let rc = system(on ? '/etc/init.d/dnet enable && /etc/init.d/dnet restart' : '/etc/init.d/dnet stop; /etc/init.d/dnet disable');
 		if (rc != 0 && on) {
@@ -172,7 +175,7 @@ const methods = {
 	update_start: { args: { mode: 'mode' }, call: function(req) {
 		let mode = req.args.mode;
 		if (mode != 'check' && mode != 'update') return { ok: false, error: '非法操作' };
-		let p = normalized_path(cfg('program_path', '/mnt/sda1/overlay/usr/bin/dnet'), 'dnet');
+		let p = normalized_path(cfg('program_path', '/usr/bin/dnet'), 'dnet');
 		if (!p) return { ok: false, error: '程序路径格式无效' };
 		/* Only check executable after the user explicitly clicks a button. */
 		if (system('[ -x ' + q(p) + ' ]') != 0) return { ok: false, error: '指定程序不存在或不可执行' };
