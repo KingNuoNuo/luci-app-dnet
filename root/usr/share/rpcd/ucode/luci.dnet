@@ -1,6 +1,6 @@
 #!/usr/bin/ucode
 'use strict';
-import { readfile } from 'fs';
+import { readfile, writefile } from 'fs';
 
 function q(s) { return "'" + replace(s, "'", "'\\''") + "'"; }
 function cfg(key, fallback) {
@@ -31,6 +31,36 @@ function run_capture(cmd) {
 	let out = readfile(tmp) || '';
 	system('rm -f ' + q(tmp));
 	return { code: rc, output: out };
+}
+
+const LOG_MARKER = '/var/run/dnet-luci/logs_marker';
+
+/* 读取系统日志里的 D-NET 行。清空按钮不改 logd（那会清掉所有服务的日志），
+ * 只记一个「最后看到哪行」的标记，后续读取时跳过标记及之前的 D-NET 行。 */
+function dnet_log_lines() {
+	let r = run_capture('/sbin/logread -l 100 -e dnet');
+	let lines = [];
+	for (let line in split(r.output || '', '\n')) {
+		line = replace(line, /\r$/, '');
+		if (match(line, / dnet\[[0-9]+\]: /))
+			push(lines, line);
+	}
+	return { ok: r.code == 0, lines: lines,
+		error: r.code == 0 ? null : trim(r.output || '无法读取系统日志') };
+}
+
+function visible_log_lines(all) {
+	let marker = trim(readfile(LOG_MARKER) || '');
+	if (!marker) return all;
+	let found = -1;
+	for (let i = 0; i < length(all); i++) {
+		if (all[i] == marker) found = i;
+	}
+	if (found < 0) return all;
+	let out = [];
+	for (let i = found + 1; i < length(all); i++)
+		push(out, all[i]);
+	return out;
 }
 
 function program_path() {
@@ -185,6 +215,22 @@ const methods = {
 	update_status: { call: function() {
 		return { status: trim(readfile('/var/run/dnet-luci/status') || 'idle'), mode: trim(readfile('/var/run/dnet-luci/mode') || ''), output: readfile('/var/run/dnet-luci/output') || '',
 			exit_code: trim(readfile('/var/run/dnet-luci/exit_code') || '') };
+	} },
+	/* D-NET 把日志同时写到 stdout，procd 收进系统日志（tag = dnet）。
+	 * 直接从 logread 读取，前端不用访问 9877，也不需要 D-NET 的登录态。 */
+	logs: { call: function() {
+		let all = dnet_log_lines();
+		let lines = visible_log_lines(all.lines);
+		return { ok: all.ok, count: length(lines), lines: join('\n', lines), error: all.error };
+	} },
+	logs_clear: { call: function() {
+		let all = dnet_log_lines();
+		if (!all.ok) return { ok: false, error: all.error };
+		let visible = visible_log_lines(all.lines);
+		system('mkdir -p /var/run/dnet-luci');
+		let marker = length(all.lines) ? all.lines[length(all.lines) - 1] : '';
+		writefile(LOG_MARKER, marker);
+		return { ok: true, cleared: length(visible) };
 	} },
 	binary_status: { call: function() {
 		let parts = split(trim(readfile('/var/run/dnet-luci/bootstrap_status') || 'idle\t0\t0\t0\t'), '\t');

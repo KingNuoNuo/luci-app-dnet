@@ -10,6 +10,8 @@ var callApply = rpc.declare({ object: 'luci.dnet', method: 'settings_apply', par
 var callUpdate = rpc.declare({ object: 'luci.dnet', method: 'update_start', params: [ 'mode' ] });
 var callUpdateStatus = rpc.declare({ object: 'luci.dnet', method: 'update_status' });
 var callBinaryStatus = rpc.declare({ object: 'luci.dnet', method: 'binary_status' });
+var callLogs = rpc.declare({ object: 'luci.dnet', method: 'logs' });
+var callLogsClear = rpc.declare({ object: 'luci.dnet', method: 'logs_clear' });
 var callSecretStatus = rpc.declare({ object: 'luci.dnet', method: 'secret_status' });
 var callSecretInit = rpc.declare({ object: 'luci.dnet', method: 'secret_init' });
 var callSecretEncrypt = rpc.declare({ object: 'luci.dnet', method: 'secret_encrypt' });
@@ -106,11 +108,20 @@ return view.extend({
 		var pathStyle = 'display:block;width:100%;max-width:56rem;min-width:0;box-sizing:border-box';
 		var program = e('input', { 'id': 'dnet-program-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.program_path, placeholder: '/usr/bin/dnet' });
 		var config = e('input', { 'id': 'dnet-config-path', 'class': 'cbi-input-text', 'style': pathStyle, value: initial.config_path, placeholder: '/etc/dnet/.dnet_config.yaml' });
-		var enabled = e('input', { 'id': 'dnet-enabled', 'type': 'checkbox', 'class': 'cbi-input-checkbox', checked: initial.enabled });
+		// LuCI 的 E() 用 setAttribute() 写属性；checked:false 会变成 checked="false"，
+		// 浏览器只要看到 checked 属性就勾上。必须直接设 DOM 属性。
+		var enabled = e('input', { 'id': 'dnet-enabled', 'type': 'checkbox', 'class': 'cbi-input-checkbox' });
+		enabled.checked = !!initial.enabled;
+		// 主题给 label > input[type=checkbox] 加了 position:relative;top:0.4rem，
+		// 外层 label 又继承 .cbi-value 的 line-height:2.4rem，复选框按 baseline 排会下沉。
+		// 复位偏移 + 关掉外层的 2.4rem 行高，让复选框和文字真正居中对齐。
+		enabled.style.top = '0';
+		enabled.style.right = '0';
+		enabled.style.verticalAlign = 'middle';
 		var state = e('span', { 'class': 'label' }, initial.running ? '运行中' : (initial.enabled ? '已启用，未运行' : '已关闭'));
 		var binaryProgress = e('progress', { 'max': 100, 'value': 0, 'style': 'display:none;width:100%;max-width:36rem;height:1.2em' });
-		var binaryMessage = e('p', { 'class': 'cbi-value-description', 'style': 'margin:0.4em 0 0' }, '程序不存在时，启用服务会自动下载；缺少的配置文件也会自动创建。');
-		var job = e('pre', { 'style': 'white-space:pre-wrap;max-height:22em;overflow:auto' }, '尚未检查更新。');
+		var binaryMessage = e('p', { 'class': 'cbi-value-description', 'style': 'margin:0' }, '程序不存在时，启用服务会自动下载；缺少的配置文件也会自动创建。');
+		var job = e('pre', { 'style': 'white-space:pre-wrap;max-height:16em;overflow:auto;margin:0.5em 0 0;background:#f5f5f5;padding:0.6em;border-radius:3px' }, '尚未检查更新。');
 		var upgradeButton;
 		/* ---- 配置加密 ---- */
 		var secretBadge = e('span', { 'class': 'label' }, '读取中…');
@@ -324,22 +335,103 @@ return view.extend({
 				return '正在下载 D-NET：' + (result.percent || 0) + '%（' + formatBytes(result.downloaded) + (result.total ? ' / ' + formatBytes(result.total) : '') + '）';
 			return result.message || '正在通过 LuCI 下载并校验升级…';
 		}
+		/* ---- 顶部 tab：基本设置 / 仪表板 / 日志 ----
+		 * D-NET 登录页现在只允许同主机的 LuCI 页面把它放进 iframe，
+		 * 所以仪表板可以内嵌；referrerpolicy 必须放行 origin，
+		 * 否则登录页认不出父页面，又会把整个 LuCI 顶走。 */
+		var webBase = 'http://' + window.location.hostname + ':' + initial.web_port;
+		var dashFrame = e('iframe', {
+			'style': 'width:100%;height:70vh;min-height:32rem;border:1px solid #ddd;border-radius:4px;background:#fff',
+			'loading': 'lazy', 'referrerpolicy': 'strict-origin-when-cross-origin'
+		});
+		var panes = {};
+		var tabButtons = {};
+		var activeTab = 'settings';
+		var logView = e('pre', { 'id': 'dnet-log-view', 'style': 'margin:0;padding:0.8em;background:#f5f5f5;border:1px solid #ddd;border-radius:4px;min-height:32rem;max-height:70vh;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:0.85em;line-height:1.45' }, '尚未读取日志。');
+		var logInfo = e('span', { 'style': 'color:#666' }, '');
+		var autoRefresh = e('input', { 'type': 'checkbox', 'style': 'vertical-align:middle' });
+		autoRefresh.checked = true;
+		function refreshLogs() {
+			// 用户翻到上面看历史时，刷新后不要把他拽回底部。
+			var stickBottom = logView.scrollHeight - logView.scrollTop - logView.clientHeight < 40;
+			logInfo.textContent = '读取中…';
+			return callLogs().then(function(r) {
+				logInfo.textContent = r && r.ok ? ('共 ' + (r.count || 0) + ' 条') : '读取失败';
+				logView.textContent = (r && r.lines) || (r && r.error) || '暂无 D-NET 日志。';
+				if (stickBottom)
+					logView.scrollTop = logView.scrollHeight;
+				return r;
+			}).catch(function(err) {
+				logInfo.textContent = '读取失败';
+				logView.textContent = '读取 D-NET 日志失败：' + (err.message || err);
+			});
+		}
+		function clearLogs() {
+			ui.showModal('清空 D-NET 日志', [
+				e('p', {}, '只清空这个页面显示的 D-NET 日志，不动系统里其它服务的日志；之后产生的新日志会继续显示。'),
+				e('div', { 'style': 'display:flex;flex-wrap:wrap;gap:0.5em;margin-top:0.5em' }, [
+					e('button', { 'class': 'cbi-button', 'click': function() { ui.hideModal(); } }, '取消'),
+					e('button', { 'class': 'cbi-button cbi-button-negative', 'click': function() {
+						ui.hideModal();
+						return callLogsClear().then(function(r) {
+							if (!r || !r.ok) {
+								notify((r && r.error) || '清空失败', true);
+								return;
+							}
+							notify('已清空当前显示的 D-NET 日志');
+							return refreshLogs();
+						}).catch(function(err) {
+							notify('清空失败：' + (err.message || err), true);
+						});
+					} }, '清空')
+				])
+			]);
+		}
+		function selectTab(name) {
+			activeTab = name;
+			for (var k in panes)
+				panes[k].style.display = (k == name) ? '' : 'none';
+			for (var t in tabButtons) {
+				// LuCI 主题的激活样式是 li.cbi-tab，未激活是 li.cbi-tab-disabled；
+				// cbi-tab-active 不是主题认的类名。
+				tabButtons[t].className = t == name ? 'cbi-tab' : 'cbi-tab-disabled';
+				tabButtons[t].setAttribute('aria-selected', t == name ? 'true' : 'false');
+			}
+			// 切到仪表板时才加载 iframe，避免每次打开页面都去访问 9877。
+			if (name == 'dashboard' && !dashFrame.src)
+				dashFrame.src = webBase + '/';
+			if (name == 'logs')
+				return refreshLogs();
+		}
+		function makeTab(name, label) {
+			// 主题样式只写在 .cbi-tabmenu > li 上，用 button 永远不会有选中态。
+			tabButtons[name] = e('li', {
+				'class': 'cbi-tab-disabled', 'role': 'tab',
+				'aria-selected': 'false',
+				'click': function(ev) { ev.preventDefault(); selectTab(name); }
+			}, [ e('a', { 'href': '#' }, label) ]);
+			return tabButtons[name];
+		}
 		var root = e('div', { 'class': 'dnet-page' }, [
 			e('h2', {}, 'D-NET'),
-			e('p', { 'class': 'description' }, '服务、程序和配置路径统一在下方保存并应用。'),
+			e('p', { 'class': 'description' }, '服务与路径配置、内置仪表板与 D-NET 日志。配置改动需点「保存并应用」才会生效。'),
+			e('div', { 'class': 'cbi-tabmenu', 'role': 'tablist' }, [
+				makeTab('settings', '基本设置'),
+				makeTab('dashboard', '仪表板'),
+				makeTab('logs', '日志')
+			]),
+			panes.settings = e('div', { 'data-tab': 'settings' }, [
 			e('div', { 'class': 'cbi-section' }, [
 				e('h3', {}, '服务与路径'),
 				e('div', { 'class': 'cbi-value' }, [
 					e('label', { 'class': 'cbi-value-title', 'for': 'dnet-enabled' }, '服务开关'),
-					e('div', { 'class': 'cbi-value-field' }, [
-						e('label', { 'style': 'display:inline-flex;align-items:center;gap:0.6em;cursor:pointer' }, [ enabled, '启用 D-NET 服务' ]),
-						e('span', { 'style': 'margin-left:1em' }, state)
+					e('div', { 'class': 'cbi-value-field', 'style': 'display:flex;flex-direction:column;align-items:flex-start;gap:0.2em;min-height:2.4rem' }, [
+						e('div', { 'style': 'display:flex;align-items:center;flex-wrap:wrap;gap:1em;min-height:2.4rem;line-height:1.4' }, [
+							e('label', { 'style': 'display:inline-flex;align-items:center;gap:0.6em;cursor:pointer;line-height:1.4' }, [ enabled, '启用 D-NET 服务' ]),
+							state
+						]),
+						e('p', { 'class': 'cbi-value-description', 'style': 'margin:0;padding:0' }, '程序不存在时，启用服务会自动从 GitHub Releases 下载 D-NET 二进制程序。')
 					])
-				]),
-				e('p', { 'class': 'cbi-value-description' }, '勾选状态会在保存后应用，并同步设置开机启动。'),
-				e('div', { 'class': 'cbi-value' }, [
-					e('label', { 'class': 'cbi-value-title' }, '程序状态'),
-					e('div', { 'class': 'cbi-value-field' }, [ binaryProgress, binaryMessage ])
 				]),
 				e('div', { 'class': 'cbi-value' }, [
 					e('label', { 'class': 'cbi-value-title' }, '应用程序路径'),
@@ -373,22 +465,44 @@ return view.extend({
 				secretHint
 			]),
 			e('div', { 'class': 'cbi-section' }, [
-				e('h3', {}, '版本升级'),
-				e('div', { 'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:0.5em' }, [
-					e('p', { 'style': 'margin:0' }, '检查和升级使用已保存的应用程序路径。'),
-					button('检查更新', '', function() { return runUpdate('check'); }),
-				(upgradeButton = button('立即升级', 'cbi-button-negative', function() { return runUpdate('update'); }))
-				]),
-				job
+				e('h3', {}, '程序与更新'),
+				e('div', { 'class': 'dnet-update-card', 'style': 'border:1px solid #ddd;border-radius:4px;padding:0.8em' }, [
+					e('div', { 'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:0.6em' }, [
+						binaryMessage,
+						button('检查更新', '', function() { return runUpdate('check'); }),
+						(upgradeButton = button('立即升级', 'cbi-button-negative', function() { return runUpdate('update'); }))
+					]),
+					e('p', { 'class': 'cbi-value-description', 'style': 'margin:0;padding:0.3em 0' }, [
+						'版本发布页：',
+						e('a', { 'href': 'https://github.com/KingNuoNuo/dnet/releases', 'target': '_blank', 'rel': 'noreferrer' }, 'github.com/KingNuoNuo/dnet/releases')
+					]),
+					binaryProgress,
+					job
+				])
 			]),
-			e('div', { 'class': 'cbi-section' }, [
-				e('h3', {}, 'Web 管理界面'),
-				e('div', { 'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:0.5em' }, [
-					e('p', { 'style': 'margin:0' }, 'D-NET Web 默认端口：9877'),
-					e('a', { 'class': 'cbi-button cbi-button-action', 'href': 'http://' + window.location.hostname + ':' + initial.web_port + '/', 'target': '_blank', 'rel': 'noreferrer' }, '打开 D-NET Web 界面')
+			]),
+			panes.dashboard = e('div', { 'data-tab': 'dashboard', 'style': 'display:none' }, [
+				e('div', { 'class': 'cbi-section' }, [
+					e('div', { 'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:0.5em;margin-bottom:0.6em' }, [
+						e('p', { 'style': 'margin:0' }, '内嵌 D-NET 管理界面（端口 ' + initial.web_port + '）；未登录时在框内登录即可。'),
+						e('a', { 'class': 'cbi-button cbi-button-action', 'href': webBase + '/', 'target': '_blank', 'rel': 'noreferrer' }, '在新窗口打开')
+					]),
+					dashFrame
+				])
+			]),
+			panes.logs = e('div', { 'data-tab': 'logs', 'style': 'display:none' }, [
+				e('div', { 'class': 'cbi-section' }, [
+					e('div', { 'style': 'display:flex;flex-wrap:wrap;align-items:center;gap:0.5em;margin-bottom:0.6em' }, [
+						e('label', { 'style': 'display:inline-flex;align-items:center;gap:0.3em' }, [ autoRefresh, '自动刷新' ]),
+						button('立即刷新', '', function() { return refreshLogs(); }),
+						button('清空', 'cbi-button-negative', function() { return clearLogs(); }),
+						logInfo
+					]),
+					logView
 				])
 			])
 		]);
+		selectTab('settings');
 		upgradeButton.style.display = 'none';
 		applySecret(secretInitial);
 		if (data[1].output)
@@ -415,6 +529,8 @@ return view.extend({
 				} else if (v[1].output) {
 					job.textContent = v[1].output + (v[1].exit_code ? '\n退出码：' + v[1].exit_code : '');
 				}
+				if (activeTab == 'logs' && autoRefresh.checked)
+					refreshLogs();
 			});
 		});
 		return root;
